@@ -81,6 +81,7 @@ impl StorageEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use tempfile::NamedTempFile;
 
     #[tokio::test]
@@ -109,5 +110,139 @@ mod tests {
 
         let engine = StorageEngine::new(&path).await.unwrap();
         assert_eq!(engine.get("persist").await.unwrap(), "yes");
+    }
+
+    #[tokio::test]
+    async fn test_overwrite_value() {
+        let tmp = NamedTempFile::new().unwrap();
+        let engine = StorageEngine::new(tmp.path()).await.unwrap();
+
+        engine.set("k".into(), "v1".into()).await.unwrap();
+        let old = engine.set("k".into(), "v2".into()).await.unwrap();
+        assert_eq!(old, Some("v1".to_string()));
+        assert_eq!(engine.get("k").await.unwrap(), "v2");
+    }
+
+    #[tokio::test]
+    async fn test_delete_nonexistent() {
+        let tmp = NamedTempFile::new().unwrap();
+        let engine = StorageEngine::new(tmp.path()).await.unwrap();
+
+        let result = engine.delete("nope").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_keys_and_len() {
+        let tmp = NamedTempFile::new().unwrap();
+        let engine = StorageEngine::new(tmp.path()).await.unwrap();
+
+        assert_eq!(engine.len().await, 0);
+        engine.set("a".into(), "1".into()).await.unwrap();
+        engine.set("b".into(), "2".into()).await.unwrap();
+        assert_eq!(engine.len().await, 2);
+
+        let mut keys = engine.keys().await;
+        keys.sort();
+        assert_eq!(keys, vec!["a", "b"]);
+    }
+
+    /// Stress test: 1000 concurrent writes followed by reads.
+    #[tokio::test]
+    #[ignore] // Run with: cargo test --release -- --ignored
+    async fn stress_test_concurrent_writes() {
+        let tmp = NamedTempFile::new().unwrap();
+        let engine = Arc::new(StorageEngine::new(tmp.path()).await.unwrap());
+        let num_tasks = 1000;
+
+        // Concurrent writes
+        let mut handles = Vec::new();
+        for i in 0..num_tasks {
+            let eng = Arc::clone(&engine);
+            handles.push(tokio::spawn(async move {
+                eng.set(format!("key_{i}"), format!("val_{i}")).await.unwrap();
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        assert_eq!(engine.len().await, num_tasks);
+
+        // Verify all values
+        for i in 0..num_tasks {
+            let val = engine.get(&format!("key_{i}")).await.unwrap();
+            assert_eq!(val, format!("val_{i}"));
+        }
+    }
+
+    /// Stress test: concurrent reads and writes interleaved.
+    #[tokio::test]
+    #[ignore]
+    async fn stress_test_mixed_read_write() {
+        let tmp = NamedTempFile::new().unwrap();
+        let engine = Arc::new(StorageEngine::new(tmp.path()).await.unwrap());
+
+        // Seed some data
+        for i in 0..100 {
+            engine.set(format!("k{i}"), format!("v{i}")).await.unwrap();
+        }
+
+        let mut handles = Vec::new();
+
+        // 500 concurrent reads
+        for i in 0..500 {
+            let eng = Arc::clone(&engine);
+            handles.push(tokio::spawn(async move {
+                let _ = eng.get(&format!("k{}", i % 100)).await;
+            }));
+        }
+
+        // 500 concurrent writes
+        for i in 0..500 {
+            let eng = Arc::clone(&engine);
+            handles.push(tokio::spawn(async move {
+                eng.set(format!("mix_{i}"), format!("val_{i}")).await.unwrap();
+            }));
+        }
+
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        // Original keys intact
+        for i in 0..100 {
+            assert_eq!(engine.get(&format!("k{i}")).await.unwrap(), format!("v{i}"));
+        }
+        // New keys written
+        assert_eq!(engine.len().await, 600);
+    }
+
+    /// Stress test: persistence survives after bulk operations.
+    #[tokio::test]
+    #[ignore]
+    async fn stress_test_persistence_after_bulk() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+
+        {
+            let engine = Arc::new(StorageEngine::new(&path).await.unwrap());
+            let mut handles = Vec::new();
+            for i in 0..500 {
+                let eng = Arc::clone(&engine);
+                handles.push(tokio::spawn(async move {
+                    eng.set(format!("bulk_{i}"), format!("data_{i}")).await.unwrap();
+                }));
+            }
+            for h in handles {
+                h.await.unwrap();
+            }
+        }
+
+        // Reload from disk
+        let engine = StorageEngine::new(&path).await.unwrap();
+        assert_eq!(engine.len().await, 500);
+        assert_eq!(engine.get("bulk_0").await.unwrap(), "data_0");
+        assert_eq!(engine.get("bulk_499").await.unwrap(), "data_499");
     }
 }

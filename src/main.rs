@@ -12,15 +12,28 @@ use crate::cli::{parse, print_help, Command};
 use crate::metrics::Metrics;
 use crate::storage::StorageEngine;
 
-const BANNER: &str = r#"
-  ___                          ___  ___
- | __| ___  _ _  _ _  _  _ _ _| _ \| _ )
- | _| / -_)| '_|| '_|| || | '  \  _/| _ \
- |_|  \___||_|  |_|   \_,_|_|_|_|  |___/
+fn print_banner() {
+    // Diamond Blue ANSI 256-color escape codes
+    let b1 = "\x1b[38;5;27m";  // Deep royal blue
+    let b2 = "\x1b[38;5;33m";  // Diamond blue
+    let b3 = "\x1b[38;5;39m";  // Bright diamond blue
+    let b4 = "\x1b[38;5;45m";  // Ice blue
+    let b5 = "\x1b[38;5;51m";  // Crystal highlight
+    let bold = "\x1b[1m";
+    let reset = "\x1b[0m";
 
-  FerrumDB v0.1.0 — Terminal Key-Value Store
-  Type HELP for commands, EXIT to quit.
-"#;
+    println!();
+    println!("{bold}{b1}  ███████╗███████╗██████╗ ██████╗ ██╗   ██╗███╗   ███╗██████╗ ██████╗{reset}");
+    println!("{bold}{b2}  ██╔════╝██╔════╝██╔══██╗██╔══██╗██║   ██║████╗ ████║██╔══██╗██╔══██╗{reset}");
+    println!("{bold}{b3}  █████╗  █████╗  ██████╔╝██████╔╝██║   ██║██╔████╔██║██║  ██║██████╔╝{reset}");
+    println!("{bold}{b3}  ██╔══╝  ██╔══╝  ██╔══██╗██╔══██╗██║   ██║██║╚██╔╝██║██║  ██║██╔══██╗{reset}");
+    println!("{bold}{b4}  ██║     ███████╗██║  ██║██║  ██║╚██████╔╝██║ ╚═╝ ██║██████╔╝██████╔╝{reset}");
+    println!("{bold}{b5}  ╚═╝     ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝     ╚═╝╚═════╝ ╚═════╝{reset}");
+    println!();
+    println!("{bold}{b3}              ◆  The Iron-Strong Database Engine  ◆{reset}");
+    println!("{bold}{b3}              Type HELP for commands, EXIT to quit.{reset}");
+    println!();
+}
 
 const DATA_FILE: &str = "ferrumdb.json";
 
@@ -33,7 +46,7 @@ async fn main() {
         .with_target(false)
         .init();
 
-    println!("{BANNER}");
+    print_banner();
 
     let engine = match StorageEngine::new(DATA_FILE).await {
         Ok(e) => Arc::new(e),

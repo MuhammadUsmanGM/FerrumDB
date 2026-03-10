@@ -3,6 +3,7 @@ pub mod error;
 pub mod io;
 pub mod metrics;
 pub mod storage;
+pub mod studio;
 
 use std::sync::Arc;
 use tracing::{error, info};
@@ -96,6 +97,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }
     };
+
+    // Launch Ferrum Studio dashboard (non-blocking)
+    let studio_port: u16 = 7474;
+    crate::studio::serve(Arc::clone(&engine), studio_port).await;
+    println!("\x1b[38;5;208m🔥 Ferrum Studio → http://localhost:{}\x1b[0m\n", studio_port);
 
     let metrics = Arc::new(Metrics::new());
     

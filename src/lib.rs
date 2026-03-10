@@ -24,6 +24,7 @@ pub mod error;
 pub mod metrics;
 pub mod cli;
 pub mod io;
+pub mod studio;
 
 pub use storage::{StorageEngine, Transaction};
 pub use error::FerrumError;

@@ -1,9 +1,10 @@
 use crate::error::FerrumError;
+use serde_json::Value;
 
 /// Parsed CLI commands.
 #[derive(Debug, PartialEq)]
 pub enum Command {
-    Set { key: String, value: String },
+    Set { key: String, value: Value },
     Get { key: String },
     Delete { key: String },
     Keys,
@@ -22,10 +23,14 @@ pub fn parse(input: &str) -> Result<Command, FerrumError> {
     match parts[0].to_uppercase().as_str() {
         "SET" => {
             let key = parts.get(1).ok_or(FerrumError::MissingArgument("key"))?;
-            let value = parts.get(2).ok_or(FerrumError::MissingArgument("value"))?;
+            let value_str = parts.get(2).ok_or(FerrumError::MissingArgument("value"))?;
+            
+            // Try parsing as JSON, fallback to String
+            let value = serde_json::from_str(value_str).unwrap_or(Value::String(value_str.to_string()));
+            
             Ok(Command::Set {
                 key: key.to_string(),
-                value: value.to_string(),
+                value,
             })
         }
         "GET" => {
@@ -67,7 +72,7 @@ mod tests {
     fn test_parse_set() {
         assert_eq!(
             parse("SET name usman").unwrap(),
-            Command::Set { key: "name".into(), value: "usman".into() }
+            Command::Set { key: "name".into(), value: Value::String("usman".into()) }
         );
     }
 
@@ -75,7 +80,18 @@ mod tests {
     fn test_parse_set_with_spaces_in_value() {
         assert_eq!(
             parse("SET greeting hello world").unwrap(),
-            Command::Set { key: "greeting".into(), value: "hello world".into() }
+            Command::Set { key: "greeting".into(), value: Value::String("hello world".into()) }
+        );
+    }
+
+    #[test]
+    fn test_parse_set_json() {
+        assert_eq!(
+            parse(r#"SET user {"id": 1}"#).unwrap(),
+            Command::Set { 
+                key: "user".into(), 
+                value: serde_json::json!({"id": 1}) 
+            }
         );
     }
 

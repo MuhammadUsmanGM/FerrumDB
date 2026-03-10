@@ -5,6 +5,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
 use tracing::{info, warn, error};
 use serde::{Serialize, Deserialize};
+use serde_json::Value;
 
 use crate::error::FerrumError;
 
@@ -15,7 +16,7 @@ use std::time::{SystemTime, Duration};
 enum LogOp {
     Set { 
         key: String, 
-        value: String, 
+        value: Value, 
         expiry: Option<SystemTime> 
     },
     Delete { key: String },
@@ -24,7 +25,7 @@ enum LogOp {
 /// Value stored in the in-memory index.
 #[derive(Clone, Debug)]
 struct ValueEntry {
-    value: String,
+    value: Value,
     expiry: Option<SystemTime>,
 }
 
@@ -106,7 +107,7 @@ impl StorageEngine {
         })
     }
 
-    pub async fn get(&self, key: &str) -> Option<String> {
+    pub async fn get(&self, key: &str) -> Option<Value> {
         let index = self.index.read().await;
         if let Some(entry) = index.get(key) {
             if let Some(expiry) = entry.expiry {
@@ -119,12 +120,12 @@ impl StorageEngine {
         None
     }
 
-    pub async fn set(&self, key: String, value: String) -> Result<Option<String>, FerrumError> {
+    pub async fn set(&self, key: String, value: Value) -> Result<Option<Value>, FerrumError> {
         self.set_ex(key, value, None).await
     }
 
     /// Set with optional TTL.
-    pub async fn set_ex(&self, key: String, value: String, ttl: Option<Duration>) -> Result<Option<String>, FerrumError> {
+    pub async fn set_ex(&self, key: String, value: Value, ttl: Option<Duration>) -> Result<Option<Value>, FerrumError> {
         let expiry = ttl.map(|t| SystemTime::now() + t);
         let op = LogOp::Set { 
             key: key.clone(), 
@@ -138,7 +139,7 @@ impl StorageEngine {
         Ok(index.insert(key, entry).map(|e| e.value))
     }
 
-    pub async fn delete(&self, key: &str) -> Result<Option<String>, FerrumError> {
+    pub async fn delete(&self, key: &str) -> Result<Option<Value>, FerrumError> {
         let op = LogOp::Delete { key: key.to_string() };
         
         let mut index = self.index.write().await;
@@ -179,6 +180,68 @@ impl StorageEngine {
         
         Ok(())
     }
+
+    /// Compasts the log file by writing only live data to a new file.
+    pub async fn compact(&self, current_path: impl AsRef<Path>) -> Result<(), FerrumError> {
+        let current_path = current_path.as_ref();
+        let temp_path = current_path.with_extension("db.tmp");
+
+        // 1. Create temp file
+        let mut temp_file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&temp_path)
+            .await
+            .map_err(FerrumError::Io)?;
+
+        // 2. Collect live data under read lock
+        let live_data: Vec<(String, ValueEntry)> = {
+            let index = self.index.read().await;
+            index.iter()
+                .filter(|(_, entry)| {
+                    if let Some(expiry) = entry.expiry {
+                        SystemTime::now() < expiry
+                    } else {
+                        true
+                    }
+                })
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        };
+
+        // 3. Write live data to temp file
+        for (key, entry) in live_data {
+            let op = LogOp::Set { 
+                key, 
+                value: entry.value, 
+                expiry: entry.expiry 
+            };
+            let encoded = bincode::serialize(&op).map_err(FerrumError::Bincode)?;
+            let size = encoded.len() as u64;
+            temp_file.write_all(&size.to_le_bytes()).await.map_err(FerrumError::Io)?;
+            temp_file.write_all(&encoded).await.map_err(FerrumError::Io)?;
+        }
+        temp_file.sync_all().await.map_err(FerrumError::Io)?;
+
+        // 4. Atomic swap under write lock
+        {
+            let mut log_file = self.log_file.write().await;
+            // Rename is atomic on most OSs
+            fs::rename(&temp_path, &current_path).await.map_err(FerrumError::Io)?;
+            
+            // Re-open log file handle
+            *log_file = OpenOptions::new()
+                .read(true)
+                .append(true)
+                .open(&current_path)
+                .await
+                .map_err(FerrumError::Io)?;
+        }
+
+        info!("Compaction completed. Live entries: {}", self.len().await);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -195,7 +258,7 @@ mod tests {
         assert!(engine.get("key").await.is_none());
 
         engine.set("key".into(), "value".into()).await.unwrap();
-        assert_eq!(engine.get("key").await.unwrap(), "value");
+        assert_eq!(engine.get("key").await.unwrap(), serde_json::json!("value"));
 
         engine.delete("key").await.unwrap();
         assert!(engine.get("key").await.is_none());
@@ -215,7 +278,7 @@ mod tests {
 
         // Recover
         let engine = StorageEngine::new(&path).await.unwrap();
-        assert_eq!(engine.get("k2").await.unwrap(), "v2");
+        assert_eq!(engine.get("k2").await.unwrap(), serde_json::json!("v2"));
         assert!(engine.get("k1").await.is_none());
         assert_eq!(engine.len().await, 1);
     }
@@ -229,7 +292,7 @@ mod tests {
         for i in 0..100 {
             let e = Arc::clone(&engine);
             handles.push(tokio::spawn(async move {
-                e.set(format!("k{i}"), format!("v{i}")).await.unwrap();
+                e.set(format!("k{i}"), format!("v{i}").into()).await.unwrap();
             }));
         }
 
@@ -238,6 +301,6 @@ mod tests {
         }
 
         assert_eq!(engine.len().await, 100);
-        assert_eq!(engine.get("k50").await.unwrap(), "v50");
+        assert_eq!(engine.get("k50").await.unwrap(), serde_json::json!("v50"));
     }
 }

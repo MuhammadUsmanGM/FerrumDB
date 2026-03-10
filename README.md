@@ -1,114 +1,103 @@
-# FerrumDB
+# 🛡️ FerrumDB
 
-A terminal-based key-value database written in Rust, featuring persistent storage, safe concurrent access, and structured logging.
+<p align="center">
+  <img src="https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white" />
+  <img src="https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/Version-0.1.3-blue.svg?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/Storage-Append--Only-orange?style=for-the-badge" />
+</p>
 
+---
+
+**FerrumDB** is a premium, high-performance local key-value database built in **Rust**. Designed for developers who need a reliable, "zero-setup" structured data store that feels as fast as a cache but is as durable as a disk-backed database.
+
+## 🌟 Why FerrumDB?
+
+- ⚡ **Append-Only Architecture (AOF)**: $O(1)$ write performance. We never overwrite—we only grow.
+- 📦 **Structured Data**: Native support for **JSON Values**. Store objects, arrays, and numbers directly.
+- ⏳ **Time-To-Live (TTL)**: Built-in data expiration for efficient local caching.
+- 🧹 **Background Compaction**: Automatic garbage collection to keep your storage footprint minimal.
+- 🏗️ **Embeddable Library**: Use it as a CLI tool or import it as a high-level Rust crate.
+- 🛡️ **Crash Resilient**: Atomic swaps and `sync_data` guarantee your data survives power loss.
+
+---
+
+## 🚀 Quick Start
+
+### Library Usage (Zero-Setup)
+
+Add FerrumDB to your project and start storing data in seconds:
+
+```rust
+use ferrumdb::FerrumDB;
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Zero-setup open (defaults to ./ferrum.db)
+    let db = FerrumDB::open_default().await?;
+
+    // Store structured JSON
+    db.set("user:1".into(), json!({
+        "name": "Usman",
+        "role": "Premium Developer"
+    })).await?;
+
+    // Retrieve data
+    if let Some(user) = db.get("user:1").await {
+        println!("User: {}", user["name"]);
+    }
+
+    Ok(())
+}
 ```
-  | __| ___  _ _  _ _  _  _ _ _| _ \| _ )
-  | _| / -_)| '_|| '_|| || | '  \  _/| _ \
-  |_|  \___||_|  |_|   \_,_|_|_|_|  |___/
-```
 
-## Features
+### CLI Interactive REPL
 
-- **In-memory KV store** backed by `HashMap` with JSON file persistence
-- **Concurrent access** via `tokio::sync::RwLock` (multiple readers, exclusive writer)
-- **Interactive REPL** with command history (arrow keys) powered by `rustyline`
-- **Structured logging** via `tracing` with configurable log levels
-- **Operation metrics** tracking GETs, SETs, DELETEs, errors, and uptime
-- **Graceful shutdown** on `EXIT`, `Ctrl+C`, or `Ctrl+D`
-
-## Getting Started
-
-### Prerequisites
-
-- [Rust](https://rustup.rs/) (1.70+ recommended)
-
-### Build & Run
-
-```bash
-cargo run
-```
-
-Release build for better performance:
+Experience the premium terminal interface with autocomplete and syntax highlighting:
 
 ```bash
 cargo run --release
 ```
 
-### Run Tests
+---
 
-```bash
-cargo test
-```
+## 🛠️ Commands Reference
 
-Run stress tests (ignored by default):
+| Command | Usage | Description |
+| :--- | :--- | :--- |
+| **SET** | `SET <key> <json>` | Store structured data (Strings, Objects, Arrays) |
+| **GET** | `GET <key>` | Retrieve and pretty-print stored data |
+| **DELETE** | `DELETE <key>` | Remove a key-value pair |
+| **KEYS** | `KEYS` | List all indexed keys |
+| **COUNT** | `COUNT` | Show total number of entries |
+| **COMPACT**| `COMPACT` | Manually trigger log file optimization |
+| **HELP** | `HELP` | Show commands and session metrics |
 
-```bash
-cargo test --release -- --ignored
-```
+---
 
-## Commands
+## 🎨 Premium REPL Features
 
-| Command | Description |
-|---------|-------------|
-| `SET <key> <value>` | Store a key-value pair (values can contain spaces) |
-| `GET <key>` | Retrieve the value for a key |
-| `DELETE <key>` | Remove a key-value pair |
-| `KEYS` | List all stored keys |
-| `COUNT` | Show total number of entries |
-| `HELP` | Show help and session metrics |
-| `EXIT` | Save and quit |
+- **Tab-Complete**: Instantly complete commands and keys.
+- **Colorized Output**: High-contrast, easy-to-read terminal feedback.
+- **JSON Pretty-Print**: Structured output for complex data.
 
-## Example Session
+---
 
-```
-ferrumdb> SET name usman
-OK
-ferrumdb> SET language rust
-OK
-ferrumdb> GET name
-usman
-ferrumdb> KEYS
-  language
-  name
-(2 keys)
-ferrumdb> DELETE name
-OK (deleted)
-ferrumdb> GET name
-(nil)
-ferrumdb> EXIT
-Goodbye!
-```
+## 📐 Architecture
 
-## Architecture
+- **Engine**: Bitcask-lite inspired log-structured storage.
+- **Index**: In-memory `HashMap` leveraging `tokio::sync::RwLock` for high concurrency.
+- **Persistence**: Binary serialization via `bincode` for maximum speed and minimal disk usage.
 
-```
-src/
-├── main.rs       # Entry point, async runtime, REPL loop
-├── storage.rs    # Storage engine (HashMap + RwLock + JSON persistence)
-├── cli.rs        # Command parser (SET, GET, DELETE, KEYS, COUNT, HELP, EXIT)
-├── error.rs      # Unified error types
-└── metrics.rs    # Atomic operation counters and uptime tracking
-```
+---
 
-### Concurrency Model
+## 📝 License
 
-- `tokio::sync::RwLock` for thread-safe read/write access to the KV store
-- `AtomicU64` for lock-free metrics counters
-- `Arc` for shared ownership across async tasks
+Distributed under the **MIT License**. See `LICENSE` for more information.
 
-### Persistence
+---
 
-Data is stored in `ferrumdb.json` in the working directory. The file is written on every SET/DELETE operation and loaded automatically on startup.
-
-## Configuration
-
-Set the `RUST_LOG` environment variable for verbose logging:
-
-```bash
-RUST_LOG=ferrumdb=debug cargo run
-```
-
-## License
-
-MIT
+<p align="center">
+  Built with 🦀 by Muhammad Usman
+</p>

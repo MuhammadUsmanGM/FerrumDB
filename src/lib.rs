@@ -24,7 +24,7 @@ pub mod error;
 pub mod metrics;
 pub mod cli;
 
-pub use storage::StorageEngine;
+pub use storage::{StorageEngine, Transaction};
 pub use error::FerrumError;
 pub use metrics::Metrics;
 
@@ -77,5 +77,20 @@ impl FerrumDB {
     /// High-level access to GET a JSON value.
     pub async fn get(&self, key: &str) -> Option<serde_json::Value> {
         self.engine.get(key).await
+    }
+
+    /// Create a secondary index on a specific JSON field.
+    pub async fn create_index(&self, field: &str) -> Result<(), FerrumError> {
+        self.engine.create_index(field).await
+    }
+
+    /// Search the database using a secondary index.
+    pub async fn find(&self, field: &str, value: &serde_json::Value) -> Vec<String> {
+        self.engine.get_by_index(field, value).await
+    }
+
+    /// Commit a batch of operations atomically using a Transaction.
+    pub async fn commit(&self, tx: Transaction) -> Result<(), FerrumError> {
+        self.engine.commit_transaction(tx.build()).await
     }
 }

@@ -43,7 +43,7 @@ impl Completer for FerrumCompleter {
         pos: usize,
         _ctx: &rustyline::Context<'_>,
     ) -> rustyline::Result<(usize, Vec<Pair>)> {
-        let commands = vec!["SET ", "GET ", "DELETE ", "KEYS", "COUNT", "HELP", "EXIT"];
+        let commands = vec!["SET ", "GET ", "DELETE ", "KEYS", "COUNT", "HELP", "EXIT", "INDEX ", "FIND "];
         let mut candidates = Vec::new();
 
         let upcase = line.to_uppercase();
@@ -186,6 +186,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Command::Count => {
                 println!("{} entries", engine.len().await);
+            }
+            Command::CreateIndex { field } => {
+                match engine.create_index(&field).await {
+                    Ok(_) => println!("\x1b[32mIndex created on '{}'\x1b[0m", field),
+                    Err(e) => println!("\x1b[31mError: {}\x1b[0m", e),
+                }
+            }
+            Command::Find { field, value } => {
+                let keys = engine.get_by_index(&field, &value).await;
+                if keys.is_empty() {
+                    println!("\x1b[33m(no matches)\x1b[0m");
+                } else {
+                    for k in &keys {
+                        println!("  \x1b[36m{}\x1b[0m", k);
+                    }
+                    println!("({} matches)", keys.len());
+                }
             }
             Command::Help => {
                 print_help();

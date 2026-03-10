@@ -11,6 +11,8 @@ pub enum Command {
     Count,
     Help,
     Exit,
+    CreateIndex { field: String },
+    Find { field: String, value: Value },
 }
 
 /// Parse a raw input line into a Command.
@@ -45,6 +47,16 @@ pub fn parse(input: &str) -> Result<Command, FerrumError> {
         "COUNT" => Ok(Command::Count),
         "HELP" => Ok(Command::Help),
         "EXIT" | "QUIT" => Ok(Command::Exit),
+        "INDEX" | "CREATE_INDEX" => {
+            let field = parts.get(1).ok_or(FerrumError::MissingArgument("field"))?;
+            Ok(Command::CreateIndex { field: field.to_string() })
+        }
+        "FIND" => {
+            let field = parts.get(1).ok_or(FerrumError::MissingArgument("field"))?;
+            let value_str = parts.get(2).ok_or(FerrumError::MissingArgument("value"))?;
+            let value = serde_json::from_str(value_str).unwrap_or(Value::String(value_str.to_string()));
+            Ok(Command::Find { field: field.to_string(), value })
+        }
         other => Err(FerrumError::InvalidCommand(other.to_string())),
     }
 }
@@ -58,6 +70,8 @@ FerrumDB Commands:
   DELETE <key>        Remove a key-value pair
   KEYS                List all keys
   COUNT               Show number of stored entries
+  INDEX <field>       Create secondary index on a JSON field
+  FIND <field> <val>  Search data using a secondary index
   HELP                Show this help message
   EXIT                Quit FerrumDB
 "#

@@ -12,14 +12,16 @@ use crate::error::FerrumError;
 use std::time::{SystemTime, Duration};
 
 /// Types of operations stored in the log.
-#[derive(Serialize, Deserialize, Debug)]
-enum LogOp {
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum LogOp {
     Set { 
         key: String, 
         value: Value, 
         expiry: Option<SystemTime> 
     },
     Delete { key: String },
+    /// A group of operations that must be applied together.
+    Transaction { ops: Vec<LogOp> },
 }
 
 /// Value stored in the in-memory index.
@@ -29,12 +31,50 @@ struct ValueEntry {
     expiry: Option<SystemTime>,
 }
 
+/// A builder for atomic transactions.
+pub struct Transaction {
+    ops: Vec<LogOp>,
+}
+
+impl Transaction {
+    /// Create a new empty transaction.
+    pub fn new() -> Self {
+        Self { ops: Vec::new() }
+    }
+
+    /// Add a SET operation to the transaction.
+    pub fn set(mut self, key: String, value: Value) -> Self {
+        self.ops.push(LogOp::Set { key, value, expiry: None });
+        self
+    }
+
+    /// Add a SET operation with TTL to the transaction.
+    pub fn set_ex(mut self, key: String, value: Value, ttl: Duration) -> Self {
+        let expiry = Some(SystemTime::now() + ttl);
+        self.ops.push(LogOp::Set { key, value, expiry });
+        self
+    }
+
+    /// Add a DELETE operation to the transaction.
+    pub fn delete(mut self, key: String) -> Self {
+        self.ops.push(LogOp::Delete { key });
+        self
+    }
+
+    /// Consumes the builder and returns the operations.
+    pub fn build(self) -> Vec<LogOp> {
+        self.ops
+    }
+}
+
 /// Core key-value storage engine with in-memory index and append-only log.
 pub struct StorageEngine {
-    /// In-memory index: key -> ValueEntry
+    /// In-memory primary index: key -> ValueEntry
     index: RwLock<HashMap<String, ValueEntry>>,
     /// Handle to the log file for appending
     log_file: RwLock<File>,
+    /// Secondary indexes: IndexName -> {ValueAsString -> [Keys]}
+    secondary_indexes: RwLock<HashMap<String, HashMap<String, Vec<String>>>>,
 }
 
 impl StorageEngine {
@@ -81,14 +121,9 @@ impl StorageEngine {
                 }
 
                 let entry_data = &buffer[cursor..cursor + size];
-                match bincode::deserialize::<LogOp>(entry_data) {
+                match serde_json::from_slice::<LogOp>(entry_data) {
                     Ok(op) => {
-                        match op {
-                            LogOp::Set { key, value, expiry } => { 
-                                index.insert(key, ValueEntry { value, expiry }); 
-                            }
-                            LogOp::Delete { key } => { index.remove(&key); }
-                        }
+                        Self::apply_op_to_index(&mut index, op);
                     }
                     Err(e) => {
                         error!("Failed to deserialize log entry at offset {}: {}", cursor, e);
@@ -104,7 +139,25 @@ impl StorageEngine {
         Ok(Self {
             index: RwLock::new(index),
             log_file: RwLock::new(file),
+            secondary_indexes: RwLock::new(HashMap::new()),
         })
+    }
+
+    /// Helper to apply a LogOp to the in-memory index.
+    fn apply_op_to_index(index: &mut HashMap<String, ValueEntry>, op: LogOp) {
+        match op {
+            LogOp::Set { key, value, expiry } => {
+                index.insert(key, ValueEntry { value, expiry });
+            }
+            LogOp::Delete { key } => {
+                index.remove(&key);
+            }
+            LogOp::Transaction { ops } => {
+                for sub_op in ops {
+                    Self::apply_op_to_index(index, sub_op);
+                }
+            }
+        }
     }
 
     /// Retrieve a value from the database by its key.
@@ -137,9 +190,17 @@ impl StorageEngine {
         };
         self.append_to_log(op).await?;
 
-        let entry = ValueEntry { value, expiry };
-        let mut index = self.index.write().await;
-        Ok(index.insert(key, entry).map(|e| e.value))
+        let entry = ValueEntry { value: value.clone(), expiry };
+        
+        let old_val = {
+            let mut index = self.index.write().await;
+            index.insert(key.clone(), entry).map(|e| e.value)
+        };
+
+        // Update secondary indexes
+        self.update_secondary_indexes(&key, old_val.as_ref(), Some(&value)).await;
+
+        Ok(old_val)
     }
 
     /// Remove a key-value pair from the database.
@@ -147,14 +208,112 @@ impl StorageEngine {
     pub async fn delete(&self, key: &str) -> Result<Option<Value>, FerrumError> {
         let op = LogOp::Delete { key: key.to_string() };
         
-        let mut index = self.index.write().await;
-        let old = index.remove(key).map(|e| e.value);
+        let old_val = {
+            let mut index = self.index.write().await;
+            index.remove(key).map(|e| e.value)
+        };
         
-        if old.is_some() {
+        if let Some(val) = &old_val {
             self.append_to_log(op).await?;
+            self.update_secondary_indexes(key, Some(val), None).await;
         }
         
-        Ok(old)
+        Ok(old_val)
+    }
+
+    /// Create a secondary index on a specific JSON field.
+    pub async fn create_index(&self, field: &str) -> Result<(), FerrumError> {
+        let mut sec_indexes = self.secondary_indexes.write().await;
+        let mut new_index: HashMap<String, Vec<String>> = HashMap::new();
+
+        let index = self.index.read().await;
+        for (key, entry) in index.iter() {
+            if let Some(val) = entry.value.get(field) {
+                let val_str = val.to_string();
+                new_index.entry(val_str).or_default().push(key.clone());
+            }
+        }
+
+        sec_indexes.insert(field.to_string(), new_index);
+        info!("Created secondary index on field: '{}'", field);
+        Ok(())
+    }
+
+    /// Get all keys that match a specific value in a secondary index.
+    pub async fn get_by_index(&self, field: &str, value: &Value) -> Vec<String> {
+        let sec_indexes = self.secondary_indexes.read().await;
+        if let Some(index) = sec_indexes.get(field) {
+            let val_str = value.to_string();
+            if let Some(keys) = index.get(&val_str) {
+                return keys.clone();
+            }
+        }
+        Vec::new()
+    }
+
+    /// Internal helper to update secondary indexes during SET/DELETE/TX.
+    async fn update_secondary_indexes(&self, key: &str, old_val: Option<&Value>, new_val: Option<&Value>) {
+        let mut sec_indexes = self.secondary_indexes.write().await;
+        Self::update_secondary_indexes_internal(&mut sec_indexes, key, old_val, new_val);
+    }
+
+    fn update_secondary_indexes_internal(
+        sec_indexes: &mut HashMap<String, HashMap<String, Vec<String>>>,
+        key: &str,
+        old_val: Option<&Value>,
+        new_val: Option<&Value>
+    ) {
+        for (field, index) in sec_indexes.iter_mut() {
+            // Remove old value from index
+            if let Some(ov) = old_val {
+                if let Some(field_val) = ov.get(field) {
+                    let val_str = field_val.to_string();
+                    if let Some(keys) = index.get_mut(&val_str) {
+                        keys.retain(|k| k != key);
+                    }
+                }
+            }
+
+            // Add new value to index
+            if let Some(nv) = new_val {
+                if let Some(field_val) = nv.get(field) {
+                    let val_str = field_val.to_string();
+                    index.entry(val_str).or_default().push(key.to_string());
+                }
+            }
+        }
+    }
+
+    /// Commit a batch of operations atomically.
+    pub async fn commit_transaction(&self, ops: Vec<LogOp>) -> Result<(), FerrumError> {
+        if ops.is_empty() { return Ok(()); }
+
+        let tx_op = LogOp::Transaction { ops: ops.clone() };
+        self.append_to_log(tx_op).await?;
+
+        // Apply all ops to memory index under a single write lock for consistency
+        let mut index = self.index.write().await;
+        let mut sec_indexes = self.secondary_indexes.write().await;
+
+        for op in ops {
+            match op {
+                LogOp::Set { key, value, expiry } => {
+                    let old_val = index.insert(key.clone(), ValueEntry { value: value.clone(), expiry }).map(|e| e.value);
+                    Self::update_secondary_indexes_internal(&mut sec_indexes, &key, old_val.as_ref(), Some(&value));
+                }
+                LogOp::Delete { key } => {
+                    if let Some(old_val) = index.remove(&key).map(|e| e.value) {
+                        Self::update_secondary_indexes_internal(&mut sec_indexes, &key, Some(&old_val), None);
+                    }
+                }
+                LogOp::Transaction { .. } => {
+                    // Nested transactions are not supported via this API for now
+                    warn!("Nested transactions found in commit_transaction, skipping sub-ops.");
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Returns a list of all currently indexed keys.
@@ -170,9 +329,9 @@ impl StorageEngine {
     }
 
     /// Appends a serialized operation to the end of the log file.
-    /// Format: [Length (u64)][Serialized Data]
+    /// Format: [Length (u64)][Serialized JSON Data]
     async fn append_to_log(&self, op: LogOp) -> Result<(), FerrumError> {
-        let encoded = bincode::serialize(&op).map_err(FerrumError::Bincode)?;
+        let encoded = serde_json::to_vec(&op).map_err(|e| FerrumError::Corruption(e.to_string()))?;
         let size = encoded.len() as u64;
         let size_bytes = size.to_le_bytes();
 
@@ -224,7 +383,7 @@ impl StorageEngine {
                 value: entry.value, 
                 expiry: entry.expiry 
             };
-            let encoded = bincode::serialize(&op).map_err(FerrumError::Bincode)?;
+            let encoded = serde_json::to_vec(&op).map_err(|e| FerrumError::Corruption(e.to_string()))?;
             let size = encoded.len() as u64;
             temp_file.write_all(&size.to_le_bytes()).await.map_err(FerrumError::Io)?;
             temp_file.write_all(&encoded).await.map_err(FerrumError::Io)?;
@@ -309,5 +468,69 @@ mod tests {
 
         assert_eq!(engine.len().await, 100);
         assert_eq!(engine.get("k50").await.unwrap(), serde_json::json!("v50"));
+    }
+
+    #[tokio::test]
+    async fn test_secondary_indexing() {
+        let tmp = NamedTempFile::new().unwrap();
+        let engine = StorageEngine::new(tmp.path()).await.unwrap();
+
+        // 1. Data Setup
+        engine.set("u1".into(), serde_json::json!({"name": "alice", "role": "admin"})).await.unwrap();
+        engine.set("u2".into(), serde_json::json!({"name": "bob", "role": "user"})).await.unwrap();
+        engine.set("u3".into(), serde_json::json!({"name": "charlie", "role": "admin"})).await.unwrap();
+
+        // 2. Create Index
+        engine.create_index("role").await.unwrap();
+
+        // 3. Query Index
+        let admins = engine.get_by_index("role", &serde_json::json!("admin")).await;
+        assert_eq!(admins.len(), 2);
+        assert!(admins.contains(&"u1".to_string()));
+        assert!(admins.contains(&"u3".to_string()));
+
+        // 4. Update Data (bob becomes admin)
+        engine.set("u2".into(), serde_json::json!({"name": "bob", "role": "admin"})).await.unwrap();
+        let admins_updated = engine.get_by_index("role", &serde_json::json!("admin")).await;
+        assert_eq!(admins_updated.len(), 3);
+
+        // 5. Delete Data (charlie leaves)
+        engine.delete("u3").await.unwrap();
+        let admins_final = engine.get_by_index("role", &serde_json::json!("admin")).await;
+        assert_eq!(admins_final.len(), 2);
+        assert!(!admins_final.contains(&"u3".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_transactions() {
+        let tmp = NamedTempFile::new().unwrap();
+        let engine = StorageEngine::new(tmp.path()).await.unwrap();
+
+        // 1. Create index for secondary index verification during tx
+        engine.create_index("tag").await.unwrap();
+
+        // 2. Commit a transaction with multiple operations
+        let tx = Transaction::new()
+            .set("k1".into(), serde_json::json!({"tag": "blue"}))
+            .set("k2".into(), serde_json::json!({"tag": "red"}))
+            .delete("k1".into());
+        
+        engine.commit_transaction(tx.build()).await.unwrap();
+
+        // 3. Verify results
+        assert!(engine.get("k1").await.is_none());
+        assert!(engine.get("k2").await.is_some());
+        
+        let red_items = engine.get_by_index("tag", &serde_json::json!("red")).await;
+        assert_eq!(red_items.len(), 1);
+        assert_eq!(red_items[0], "k2");
+
+        // 4. Recovery Test for Transactions
+        let path = tmp.path().to_path_buf();
+        drop(engine);
+        
+        let engine_recovered = StorageEngine::new(&path).await.unwrap();
+        assert!(engine_recovered.get("k1").await.is_none());
+        assert!(engine_recovered.get("k2").await.is_some());
     }
 }

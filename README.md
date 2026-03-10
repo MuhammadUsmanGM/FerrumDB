@@ -3,7 +3,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white" />
   <img src="https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/Version-0.1.3-blue.svg?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/Version-0.1.2-blue.svg?style=for-the-badge" />
   <img src="https://img.shields.io/badge/Storage-Append--Only-orange?style=for-the-badge" />
 </p>
 

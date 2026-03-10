@@ -7,7 +7,7 @@ license = "MIT"
 repository = "https://github.com/MuhammadUsmanGM/FerrumDB"
 readme = "README.md"
 keywords = ["database", "kv", "storage", "embeddable", "json"]
-categories = ["database-implementations", "embedded-programming"]
+categories = ["database-implementations", "embedded"]
 exclude = ["ferrum.db", "*.tmp"]
 
 [dependencies]

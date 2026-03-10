@@ -10,11 +10,9 @@ use tracing_subscriber::EnvFilter;
 use rustyline::error::ReadlineError;
 use rustyline::{CompletionType, Config, EditMode, Editor};
 use rustyline::completion::{Completer, Pair};
-use rustyline::highlight::{Highlighter, MatchingBracketHighlighter};
-use rustyline::hint::{Hinter, HistoryHinter};
-use rustyline::validate::Validator;
+use rustyline::highlight::MatchingBracketHighlighter;
+use rustyline::hint::HistoryHinter;
 use rustyline::{Helper, Completer, Hinter, Highlighter, Validator};
-use std::borrow::Cow;
 
 use crate::cli::{parse, print_help, Command};
 use crate::metrics::Metrics;
@@ -33,7 +31,7 @@ struct FerrumHelper {
 }
 
 struct FerrumCompleter {
-    engine: Arc<StorageEngine>,
+    _engine: Arc<StorageEngine>,
 }
 
 impl Completer for FerrumCompleter {
@@ -106,12 +104,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .edit_mode(EditMode::Emacs)
         .build();
 
-    let helper = FerrumHelper {
-        completer: FerrumCompleter { engine: Arc::clone(&engine) },
-        highlighter: MatchingBracketHighlighter::new(),
-        validator: rustyline::validate::MatchingBracketValidator::new(),
-        hinter: HistoryHinter {},
-    };
+        let helper = FerrumHelper {
+            completer: FerrumCompleter { _engine: Arc::clone(&engine) },
+            highlighter: MatchingBracketHighlighter::new(),
+            validator: rustyline::validate::MatchingBracketValidator::new(),
+            hinter: HistoryHinter {},
+        };
 
     let mut rl = Editor::with_config(config)?;
     rl.set_helper(Some(helper));

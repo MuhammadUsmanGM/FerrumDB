@@ -1,7 +1,7 @@
 //! # Ferrum Studio
 //! 
 //! An embedded web dashboard for FerrumDB. Launch with:
-//! ```rust
+//! ```rust,no_run
 //! ferrumdb::studio::serve(engine.clone(), 3030).await?;
 //! ```
 

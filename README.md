@@ -1,103 +1,150 @@
-# 🛡️ FerrumDB
+# ⚡ FerrumDB
 
 <p align="center">
   <img src="https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white" />
+  <img src="https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white" />
   <img src="https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/Version-0.1.2-blue.svg?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/Storage-Append--Only-orange?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/AES--256-Encrypted-red?style=for-the-badge" />
 </p>
 
----
-
-**FerrumDB** is a premium, high-performance local key-value database built in **Rust**. Designed for developers who need a reliable, "zero-setup" structured data store that feels as fast as a cache but is as durable as a disk-backed database.
-
-## 🌟 Why FerrumDB?
-
-- ⚡ **Append-Only Architecture (AOF)**: $O(1)$ write performance. We never overwrite—we only grow.
-- 📦 **Structured Data**: Native support for **JSON Values**. Store objects, arrays, and numbers directly.
-- ⏳ **Time-To-Live (TTL)**: Built-in data expiration for efficient local caching.
-- 🧹 **Background Compaction**: Automatic garbage collection to keep your storage footprint minimal.
-- 🏗️ **Embeddable Library**: Use it as a CLI tool or import it as a high-level Rust crate.
-- 🛡️ **Crash Resilient**: Atomic swaps and `sync_data` guarantee your data survives power loss.
+**FerrumDB** is a premium, zero-setup embedded document database for **Rust** and **Python**. No server. No config. No migrations. Just open a file and go.
 
 ---
 
-## 🚀 Quick Start
+## 🌟 Features
 
-### Library Usage (Zero-Setup)
+| | |
+|---|---|
+| ⚡ **O(1) reads & writes** | Append-only log + in-memory HashMap index |
+| 📄 **Native JSON** | Store any structured document natively |
+| 🔍 **Secondary Indexing** | Query by JSON fields via `create_index()` |
+| 🔐 **AES-256 Encryption** | Protect data at rest with one line of config |
+| ⚛️ **Atomic Transactions** | All-or-nothing batch operations |
+| 🖥️ **Ferrum Studio** | Embedded web dashboard at `localhost:7474` |
+| 🐍 **Python Bindings** | `pip install ferrumdb` — no Rust required |
+| 🛡️ **Crash Resilient** | `fsync` + atomic rename guarantee durability |
 
-Add FerrumDB to your project and start storing data in seconds:
+---
+
+## 🐍 Python Usage
+
+```bash
+pip install ferrumdb
+```
+
+```python
+from ferrumdb import FerrumDB
+
+# Zero-setup: creates myapp.db if it doesn't exist
+db = FerrumDB.open("myapp.db")
+
+# Store any JSON-serializable value
+db.set("user:1", '{"name": "alice", "role": "admin", "score": 99}')
+db.set("user:2", '{"name": "bob",   "role": "user",  "score": 45}')
+
+# Read back
+print(db.get("user:1"))       # {"name": "alice", "role": "admin", "score": 99}
+print(db.count())             # 2
+print(db.keys())              # ["user:1", "user:2"]
+
+# Secondary indexing — O(1) field lookups
+db.create_index("role")
+admins = db.find("role", '"admin"')   # => ["user:1"]
+
+# Delete
+db.delete("user:2")
+```
+
+Your data is stored in a plain file in your project directory — portable, no server, no Docker.
+
+---
+
+## 🦀 Rust Usage
+
+```toml
+# Cargo.toml
+[dependencies]
+ferrumdb = "0.1.0"
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
+```
 
 ```rust
-use ferrumdb::FerrumDB;
+use ferrumdb::{FerrumDB, Config, Transaction};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Zero-setup open (defaults to ./ferrum.db)
+    // Standard open
     let db = FerrumDB::open_default().await?;
 
-    // Store structured JSON
-    db.set("user:1".into(), json!({
-        "name": "Usman",
-        "role": "Premium Developer"
-    })).await?;
+    // Store documents
+    db.set("user:1".into(), json!({"name": "alice", "role": "admin"})).await?;
 
-    // Retrieve data
-    if let Some(user) = db.get("user:1").await {
-        println!("User: {}", user["name"]);
-    }
+    // Query
+    db.create_index("role").await?;
+    let admins = db.find("role", &json!("admin")).await;
+
+    // Atomic transaction
+    let tx = Transaction::new()
+        .set("k1".into(), json!({"tag": "blue"}))
+        .set("k2".into(), json!({"tag": "red"}))
+        .delete("k1".into());
+    db.commit(tx).await?;
+
+    // Encrypted database
+    let key: [u8; 32] = *b"my_super_secret_key_32_bytes_!!";
+    let db_enc = FerrumDB::open(
+        Config::new().with_encryption(key)
+    ).await?;
 
     Ok(())
 }
 ```
 
-### CLI Interactive REPL
+---
 
-Experience the premium terminal interface with autocomplete and syntax highlighting:
+## 🔥 Ferrum Studio
+
+When you run the REPL, Ferrum Studio auto-launches — a premium web dashboard to browse, query, and edit your database visually.
 
 ```bash
 cargo run --release
+# 🔥 Ferrum Studio → http://localhost:7474
 ```
 
 ---
 
-## 🛠️ Commands Reference
+## 🖥️ CLI REPL Commands
 
-| Command | Usage | Description |
-| :--- | :--- | :--- |
-| **SET** | `SET <key> <json>` | Store structured data (Strings, Objects, Arrays) |
-| **GET** | `GET <key>` | Retrieve and pretty-print stored data |
-| **DELETE** | `DELETE <key>` | Remove a key-value pair |
-| **KEYS** | `KEYS` | List all indexed keys |
-| **COUNT** | `COUNT` | Show total number of entries |
-| **COMPACT**| `COMPACT` | Manually trigger log file optimization |
-| **HELP** | `HELP` | Show commands and session metrics |
+```bash
+cargo run
+```
 
----
-
-## 🎨 Premium REPL Features
-
-- **Tab-Complete**: Instantly complete commands and keys.
-- **Colorized Output**: High-contrast, easy-to-read terminal feedback.
-- **JSON Pretty-Print**: Structured output for complex data.
+| Command | Description |
+|---|---|
+| `SET <key> <json>` | Store a document |
+| `GET <key>` | Retrieve and pretty-print |
+| `DELETE <key>` | Remove a key |
+| `KEYS` | List all keys |
+| `COUNT` | Total number of entries |
+| `INDEX <field>` | Create secondary index |
+| `FIND <field> <value>` | Query by indexed field |
+| `HELP` | Show commands + session metrics |
 
 ---
 
-## 📐 Architecture
+## 🏗️ Architecture
 
-- **Engine**: Bitcask-lite inspired log-structured storage.
-- **Index**: In-memory `HashMap` leveraging `tokio::sync::RwLock` for high concurrency.
-- **Persistence**: Binary serialization via `bincode` for maximum speed and minimal disk usage.
+- **Storage**: Bitcask-inspired append-only log (AOF)
+- **Index**: In-memory `HashMap` with `tokio::sync::RwLock`
+- **Encryption**: AES-256-GCM per-block, transparent decorator pattern
+- **Compaction**: Atomic log rewrite via temp-file + rename
 
 ---
 
 ## 📝 License
 
-Distributed under the **MIT License**. See `LICENSE` for more information.
+MIT — see `LICENSE` for details.
 
----
-
-<p align="center">
-  Built with 🦀 by Muhammad Usman
-</p>
+<p align="center">Built with 🦀 by Muhammad Usman</p>

@@ -35,7 +35,7 @@ fn print_banner() {
     println!();
 }
 
-const DATA_FILE: &str = "ferrumdb.json";
+const DATA_FILE: &str = "ferrum.db";
 
 #[tokio::main]
 async fn main() {

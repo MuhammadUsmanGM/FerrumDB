@@ -4,7 +4,8 @@ use std::fmt;
 #[derive(Debug)]
 pub enum FerrumError {
     Io(std::io::Error),
-    Serialize(serde_json::Error),
+    Bincode(bincode::Error),
+    Corruption(String),
     InvalidCommand(String),
     MissingArgument(&'static str),
 }
@@ -13,7 +14,8 @@ impl fmt::Display for FerrumError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(e) => write!(f, "IO error: {e}"),
-            Self::Serialize(e) => write!(f, "Serialization error: {e}"),
+            Self::Bincode(e) => write!(f, "Bincode error: {e}"),
+            Self::Corruption(e) => write!(f, "Data corruption: {e}"),
             Self::InvalidCommand(cmd) => write!(f, "Unknown command: {cmd}"),
             Self::MissingArgument(arg) => write!(f, "Missing argument: {arg}"),
         }

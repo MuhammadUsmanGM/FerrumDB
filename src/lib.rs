@@ -1,11 +1,23 @@
-//! FerrumDB: A premium, high-performance local key-value database.
+//! # FerrumDB
 //! 
-//! Features:
-//! - Append-only binary storage (AOF)
-//! - JSON Value support (Structured Data)
-//! - Time-To-Live (TTL) expiration
-//! - Background Compaction
-//! - Zero-Setup initialization
+//! A premium, high-performance embedded key-value database for Rust applications.
+//! 
+//! FerrumDB focuses on being **zero-setup**, **performant**, and **developer-friendly**.
+//! It uses an append-only log (AOF) for $O(1)$ writes and maintains an in-memory 
+//! index for $O(1)$ reads.
+//! 
+//! ## Quick Start
+//! ```rust
+//! use ferrumdb::FerrumDB;
+//! use serde_json::json;
+//! 
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let db = FerrumDB::open_default().await?;
+//! db.set("key".into(), json!({"value": 42})).await?;
+//! # Ok(())
+//! # }
+//! ```
 
 pub mod storage;
 pub mod error;

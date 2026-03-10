@@ -1,8 +1,14 @@
 [package]
 name = "ferrumdb"
-version = "0.1.3"
+version = "0.0.1"
 edition = "2021"
-description = "A terminal-based key-value database written in Rust"
+description = "A premium, high-performance embedded key-value database with TTL and compaction."
+license = "MIT"
+repository = "https://github.com/MuhammadUsmanGM/FerrumDB"
+readme = "README.md"
+keywords = ["database", "kv", "storage", "embeddable", "json"]
+categories = ["database-implementations", "embedded-programming"]
+exclude = ["ferrum.db", "*.tmp"]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }

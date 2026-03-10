@@ -107,6 +107,8 @@ impl StorageEngine {
         })
     }
 
+    /// Retrieve a value from the database by its key.
+    /// Returns `None` if the key doesn't exist or has expired.
     pub async fn get(&self, key: &str) -> Option<Value> {
         let index = self.index.read().await;
         if let Some(entry) = index.get(key) {
@@ -120,11 +122,12 @@ impl StorageEngine {
         None
     }
 
+    /// Store a JSON value with no expiration.
     pub async fn set(&self, key: String, value: Value) -> Result<Option<Value>, FerrumError> {
         self.set_ex(key, value, None).await
     }
 
-    /// Set with optional TTL.
+    /// Store a JSON value with an optional Time-To-Live (TTL).
     pub async fn set_ex(&self, key: String, value: Value, ttl: Option<Duration>) -> Result<Option<Value>, FerrumError> {
         let expiry = ttl.map(|t| SystemTime::now() + t);
         let op = LogOp::Set { 
@@ -139,6 +142,8 @@ impl StorageEngine {
         Ok(index.insert(key, entry).map(|e| e.value))
     }
 
+    /// Remove a key-value pair from the database.
+    /// Returns the deleted value if it existed.
     pub async fn delete(&self, key: &str) -> Result<Option<Value>, FerrumError> {
         let op = LogOp::Delete { key: key.to_string() };
         
@@ -152,11 +157,13 @@ impl StorageEngine {
         Ok(old)
     }
 
+    /// Returns a list of all currently indexed keys.
     pub async fn keys(&self) -> Vec<String> {
         let index = self.index.read().await;
         index.keys().cloned().collect()
     }
 
+    /// Returns the total number of entries in the database.
     pub async fn len(&self) -> usize {
         let index = self.index.read().await;
         index.len()

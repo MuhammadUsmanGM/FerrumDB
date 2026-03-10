@@ -1,13 +1,12 @@
 use std::collections::HashMap;
 use std::path::Path;
-use tokio::fs::{self, File, OpenOptions};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
 use tracing::{info, warn, error};
 use serde::{Serialize, Deserialize};
 use serde_json::Value;
 
 use crate::error::FerrumError;
+use crate::io::{AsyncFileSystem, AsyncFile, DiskFileSystem};
 
 use std::time::{SystemTime, Duration};
 
@@ -72,65 +71,67 @@ pub struct StorageEngine {
     /// In-memory primary index: key -> ValueEntry
     index: RwLock<HashMap<String, ValueEntry>>,
     /// Handle to the log file for appending
-    log_file: RwLock<File>,
+    log_file: RwLock<Box<dyn AsyncFile>>,
     /// Secondary indexes: IndexName -> {ValueAsString -> [Keys]}
     secondary_indexes: RwLock<HashMap<String, HashMap<String, Vec<String>>>>,
+    /// Filesystem abstraction
+    fs: Box<dyn AsyncFileSystem>,
 }
 
 impl StorageEngine {
     /// Create a new storage engine, recovering the index from the log file.
-    pub async fn new(path: impl AsRef<Path>) -> Result<Self, FerrumError> {
+    pub async fn new(path: impl AsRef<std::path::Path>) -> Result<Self, FerrumError> {
+        Self::with_fs(path, Box::new(DiskFileSystem)).await
+    }
+
+    pub async fn with_fs(path: impl AsRef<std::path::Path>, fs: Box<dyn AsyncFileSystem>) -> Result<Self, FerrumError> {
         let path = path.as_ref().to_path_buf();
         let mut index = HashMap::new();
 
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).await.map_err(FerrumError::Io)?;
+            fs.create_dir_all(parent).await.map_err(FerrumError::Io)?;
         }
 
         // Open or create the log file
-        let file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .create(true)
-            .open(&path)
-            .await
-            .map_err(FerrumError::Io)?;
+        let file = fs.open_append(&path).await.map_err(FerrumError::Io)?;
 
         // Recovery: Read the entire file to rebuild the index
-        let file_len = file.metadata().await.map_err(FerrumError::Io)?.len();
-        if file_len > 0 {
-            info!("Recovering FerrumDB from log: {} ({} bytes)", path.display(), file_len);
-            
-            // Re-open for reading from the start for recovery
-            let mut reader = File::open(&path).await.map_err(FerrumError::Io)?;
-            let mut buffer = Vec::new();
-            reader.read_to_end(&mut buffer).await.map_err(FerrumError::Io)?;
+        if fs.exists(&path).await {
+            let file_len = file.metadata_len().await.map_err(FerrumError::Io)?;
+            if file_len > 0 {
+                info!("Recovering FerrumDB from log: {} ({} bytes)", path.display(), file_len);
+                
+                // Re-open for reading from the start for recovery
+                let mut reader = fs.open_read(&path).await.map_err(FerrumError::Io)?;
+                let mut buffer = Vec::new();
+                reader.read_to_end(&mut buffer).await.map_err(FerrumError::Io)?;
 
-            let mut cursor = 0;
-            while cursor < buffer.len() {
-                // Peek size (u64)
-                if cursor + 8 > buffer.len() { break; }
-                let size_bytes: [u8; 8] = buffer[cursor..cursor + 8].try_into().unwrap();
-                let size = u64::from_le_bytes(size_bytes) as usize;
-                cursor += 8;
+                let mut cursor = 0;
+                while cursor < buffer.len() {
+                    // Peek size (u64)
+                    if cursor + 8 > buffer.len() { break; }
+                    let size_bytes: [u8; 8] = buffer[cursor..cursor + 8].try_into().unwrap();
+                    let size = u64::from_le_bytes(size_bytes) as usize;
+                    cursor += 8;
 
-                if cursor + size > buffer.len() {
-                    warn!("Incomplete record at end of log, truncating during next write.");
-                    break;
-                }
-
-                let entry_data = &buffer[cursor..cursor + size];
-                match serde_json::from_slice::<LogOp>(entry_data) {
-                    Ok(op) => {
-                        Self::apply_op_to_index(&mut index, op);
+                    if cursor + size > buffer.len() {
+                        warn!("Incomplete record at end of log, truncating during next write.");
+                        break;
                     }
-                    Err(e) => {
-                        error!("Failed to deserialize log entry at offset {}: {}", cursor, e);
-                        return Err(FerrumError::Corruption(format!("At offset {}: {}", cursor, e)));
+
+                    let entry_data = &buffer[cursor..cursor + size];
+                    match serde_json::from_slice::<LogOp>(entry_data) {
+                        Ok(op) => {
+                            Self::apply_op_to_index(&mut index, op);
+                        }
+                        Err(e) => {
+                            error!("Failed to deserialize log entry at offset {}: {}", cursor, e);
+                            return Err(FerrumError::Corruption(format!("At offset {}: {}", cursor, e)));
+                        }
                     }
+                    cursor += size;
                 }
-                cursor += size;
             }
         }
 
@@ -140,6 +141,7 @@ impl StorageEngine {
             index: RwLock::new(index),
             log_file: RwLock::new(file),
             secondary_indexes: RwLock::new(HashMap::new()),
+            fs,
         })
     }
 
@@ -352,14 +354,8 @@ impl StorageEngine {
         let current_path = current_path.as_ref();
         let temp_path = current_path.with_extension("db.tmp");
 
-        // 1. Create temp file
-        let mut temp_file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&temp_path)
-            .await
-            .map_err(FerrumError::Io)?;
+        // 1. Create temp file using abstracted FS
+        let mut temp_file = self.fs.open_write(&temp_path).await.map_err(FerrumError::Io)?;
 
         // 2. Collect live data under read lock
         let live_data: Vec<(String, ValueEntry)> = {
@@ -394,15 +390,10 @@ impl StorageEngine {
         {
             let mut log_file = self.log_file.write().await;
             // Rename is atomic on most OSs
-            fs::rename(&temp_path, &current_path).await.map_err(FerrumError::Io)?;
+            self.fs.rename(&temp_path, current_path).await.map_err(FerrumError::Io)?;
             
             // Re-open log file handle
-            *log_file = OpenOptions::new()
-                .read(true)
-                .append(true)
-                .open(&current_path)
-                .await
-                .map_err(FerrumError::Io)?;
+            *log_file = self.fs.open_append(current_path).await.map_err(FerrumError::Io)?;
         }
 
         info!("Compaction completed. Live entries: {}", self.len().await);
@@ -532,5 +523,41 @@ mod tests {
         let engine_recovered = StorageEngine::new(&path).await.unwrap();
         assert!(engine_recovered.get("k1").await.is_none());
         assert!(engine_recovered.get("k2").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_encryption() {
+        use crate::io::EncryptedFileSystem;
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        let key = [7u8; 32];
+
+        // 1. Write encrypted data
+        {
+            let fs = Box::new(EncryptedFileSystem::new(Box::new(DiskFileSystem), key));
+            let engine = StorageEngine::with_fs(&path, fs).await.unwrap();
+            engine.set("secret".into(), serde_json::json!("sensitive data")).await.unwrap();
+        }
+
+        // 2. Verify raw file is encrypted (should not contain plaintext "sensitive data")
+        let raw_bytes = std::fs::read(&path).unwrap();
+        let raw_str = String::from_utf8_lossy(&raw_bytes);
+        assert!(!raw_str.contains("sensitive data"));
+
+        // 3. Recover with correct key
+        {
+            let fs = Box::new(EncryptedFileSystem::new(Box::new(DiskFileSystem), key));
+            let engine = StorageEngine::with_fs(&path, fs).await.unwrap();
+            assert_eq!(engine.get("secret").await.unwrap(), serde_json::json!("sensitive data"));
+        }
+
+        // 4. Recovery fails/panics with wrong key
+        {
+            let wrong_key = [9u8; 32];
+            let fs = Box::new(EncryptedFileSystem::new(Box::new(DiskFileSystem), wrong_key));
+            let result = StorageEngine::with_fs(&path, fs).await;
+            // It should fail during recovery decryption
+            assert!(result.is_err());
+        }
     }
 }

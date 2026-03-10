@@ -23,23 +23,40 @@ pub mod storage;
 pub mod error;
 pub mod metrics;
 pub mod cli;
+pub mod io;
 
 pub use storage::{StorageEngine, Transaction};
 pub use error::FerrumError;
 pub use metrics::Metrics;
+pub use io::{AsyncFileSystem, DiskFileSystem, EncryptedFileSystem};
 
 use std::path::PathBuf;
 
 /// High-level configuration for FerrumDB.
 pub struct Config {
     pub path: PathBuf,
+    pub encryption_key: Option<[u8; 32]>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             path: PathBuf::from("ferrum.db"),
+            encryption_key: None,
         }
+    }
+}
+
+impl Config {
+    /// Create a new config for the default path.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set an encryption key (AES-256 requires 32 bytes).
+    pub fn with_encryption(mut self, key: [u8; 32]) -> Self {
+        self.encryption_key = Some(key);
+        self
     }
 }
 
@@ -58,7 +75,14 @@ impl FerrumDB {
 
     /// Open the database with a specific configuration.
     pub async fn open(config: Config) -> Result<Self, FerrumError> {
-        let engine = StorageEngine::new(config.path).await?;
+        use crate::io::{AsyncFileSystem, DiskFileSystem, EncryptedFileSystem};
+        
+        let mut fs: Box<dyn AsyncFileSystem> = Box::new(DiskFileSystem);
+        if let Some(key) = config.encryption_key {
+            fs = Box::new(EncryptedFileSystem::new(fs, key));
+        }
+
+        let engine = StorageEngine::with_fs(config.path, fs).await?;
         Ok(Self { 
             engine: std::sync::Arc::new(engine) 
         })

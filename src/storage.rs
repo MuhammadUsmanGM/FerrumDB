@@ -1,4 +1,5 @@
-use std::path::{Path, PathBuf};
+use std::collections::HashMap;
+use std::path::Path;
 use tokio::fs::{self, File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
@@ -7,17 +8,30 @@ use serde::{Serialize, Deserialize};
 
 use crate::error::FerrumError;
 
+use std::time::{SystemTime, Duration};
+
 /// Types of operations stored in the log.
 #[derive(Serialize, Deserialize, Debug)]
 enum LogOp {
-    Set { key: String, value: String },
+    Set { 
+        key: String, 
+        value: String, 
+        expiry: Option<SystemTime> 
+    },
     Delete { key: String },
+}
+
+/// Value stored in the in-memory index.
+#[derive(Clone, Debug)]
+struct ValueEntry {
+    value: String,
+    expiry: Option<SystemTime>,
 }
 
 /// Core key-value storage engine with in-memory index and append-only log.
 pub struct StorageEngine {
-    /// In-memory index: key -> value
-    index: RwLock<HashMap<String, String>>,
+    /// In-memory index: key -> ValueEntry
+    index: RwLock<HashMap<String, ValueEntry>>,
     /// Handle to the log file for appending
     log_file: RwLock<File>,
 }
@@ -69,7 +83,9 @@ impl StorageEngine {
                 match bincode::deserialize::<LogOp>(entry_data) {
                     Ok(op) => {
                         match op {
-                            LogOp::Set { key, value } => { index.insert(key, value); }
+                            LogOp::Set { key, value, expiry } => { 
+                                index.insert(key, ValueEntry { value, expiry }); 
+                            }
                             LogOp::Delete { key } => { index.remove(&key); }
                         }
                     }
@@ -92,22 +108,41 @@ impl StorageEngine {
 
     pub async fn get(&self, key: &str) -> Option<String> {
         let index = self.index.read().await;
-        index.get(key).cloned()
+        if let Some(entry) = index.get(key) {
+            if let Some(expiry) = entry.expiry {
+                if SystemTime::now() > expiry {
+                    return None;
+                }
+            }
+            return Some(entry.value.clone());
+        }
+        None
     }
 
     pub async fn set(&self, key: String, value: String) -> Result<Option<String>, FerrumError> {
-        let op = LogOp::Set { key: key.clone(), value: value.clone() };
+        self.set_ex(key, value, None).await
+    }
+
+    /// Set with optional TTL.
+    pub async fn set_ex(&self, key: String, value: String, ttl: Option<Duration>) -> Result<Option<String>, FerrumError> {
+        let expiry = ttl.map(|t| SystemTime::now() + t);
+        let op = LogOp::Set { 
+            key: key.clone(), 
+            value: value.clone(),
+            expiry 
+        };
         self.append_to_log(op).await?;
 
+        let entry = ValueEntry { value, expiry };
         let mut index = self.index.write().await;
-        Ok(index.insert(key, value))
+        Ok(index.insert(key, entry).map(|e| e.value))
     }
 
     pub async fn delete(&self, key: &str) -> Result<Option<String>, FerrumError> {
         let op = LogOp::Delete { key: key.to_string() };
         
         let mut index = self.index.write().await;
-        let old = index.remove(key);
+        let old = index.remove(key).map(|e| e.value);
         
         if old.is_some() {
             self.append_to_log(op).await?;

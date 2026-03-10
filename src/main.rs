@@ -1,7 +1,7 @@
-mod cli;
-mod error;
-mod metrics;
-mod storage;
+pub mod cli;
+pub mod error;
+pub mod metrics;
+pub mod storage;
 
 use rustyline::DefaultEditor;
 use std::sync::Arc;

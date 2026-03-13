@@ -2,7 +2,15 @@
 //! 
 //! An embedded web dashboard for FerrumDB. Launch with:
 //! ```rust,no_run
-//! ferrumdb::studio::serve(engine.clone(), 3030).await?;
+//! use ferrumdb::StorageEngine;
+//! use std::sync::Arc;
+//! 
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let engine = Arc::new(StorageEngine::new("ferrum.db").await?);
+//! ferrumdb::studio::serve(engine.clone(), 3030).await;
+//! # Ok(())
+//! # }
 //! ```
 
 use std::sync::Arc;
@@ -29,6 +37,7 @@ pub async fn serve(engine: Arc<StorageEngine>, port: u16) {
         .route("/api/get/{key}", get(api_get))
         .route("/api/set", post(api_set))
         .route("/api/delete/{key}", delete(api_delete))
+        .route("/api/metrics", get(api_metrics))
         .with_state(engine);
 
     let addr = format!("0.0.0.0:{}", port);
@@ -87,6 +96,11 @@ async fn api_delete(
         Ok(None) => (StatusCode::NOT_FOUND, Json(json!({ "error": "Key not found" }))).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
     }
+}
+
+async fn api_metrics(State(engine): State<SharedEngine>) -> Json<Value> {
+    let snapshot = engine.metrics().snapshot();
+    Json(json!(snapshot))
 }
 
 // ─── Dashboard HTML ───────────────────────────────────────────────────────────
@@ -313,6 +327,16 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
             <div class="value" id="count-display">—</div>
         </div>
 
+        <div class="stat-card">
+            <div class="label">Ops/Second</div>
+            <div class="value" id="ops-display" style="color:var(--success)">—</div>
+        </div>
+
+        <div class="stat-card">
+            <div class="label">Uptime</div>
+            <div class="value" id="uptime-display" style="color:var(--text);font-size:20px">—</div>
+        </div>
+
         <div>
             <div class="section-title">Keys</div>
             <ul class="key-list" id="key-list"></ul>
@@ -382,6 +406,23 @@ async function loadKeys() {
     });
 }
 
+async function loadMetrics() {
+    const r = await fetch(API + '/api/metrics');
+    if (!r.ok) return;
+    const d = await r.json();
+    document.getElementById('ops-display').textContent = d.operations_per_second.toFixed(1);
+    document.getElementById('uptime-display').textContent = formatUptime(d.uptime_seconds);
+}
+
+function formatUptime(seconds) {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    if (h > 0) return `${h}h ${m}m ${s}s`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
+}
+
 function selectKey(k, el) {
     document.querySelectorAll('.key-list li').forEach(x => x.classList.remove('active'));
     el.classList.add('active');
@@ -443,7 +484,9 @@ function toast(msg, type) {
 }
 
 loadKeys();
+loadMetrics();
 setInterval(loadKeys, 10000);
+setInterval(loadMetrics, 2000);
 </script>
 </body>
 </html>"#;

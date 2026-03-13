@@ -20,6 +20,7 @@
 | 🔍 **Secondary Indexing** | Query by JSON fields via `create_index()` |
 | 🔐 **AES-256 Encryption** | Protect data at rest with one line of config |
 | ⚛️ **Atomic Transactions** | All-or-nothing batch operations |
+| ?? **Fsync Policy** | Choose durability vs performance |
 | 🖥️ **Ferrum Studio** | Embedded web dashboard at `localhost:7474` |
 | 🐍 **Python Bindings** | `pip install ferrumdb` — no Rust required |
 | 🛡️ **Crash Resilient** | `fsync` + atomic rename guarantee durability |
@@ -59,6 +60,20 @@ Your data is stored in a plain file in your project directory — portable, no s
 
 ---
 
+## Environment Config
+
+You can also control durability with environment variables:
+
+```bash
+# always sync every write
+set FERRUMDB_FSYNC=always
+```
+
+```rust
+// Uses FERRUMDB_FSYNC if set
+let db = FerrumDB::open_from_env().await?;
+```
+
 ## 🦀 Rust Usage
 
 ```toml
@@ -70,7 +85,7 @@ serde_json = "1"
 ```
 
 ```rust
-use ferrumdb::{FerrumDB, Config, Transaction};
+use ferrumdb::{FerrumDB, Config, Transaction, FsyncPolicy};
 use serde_json::json;
 
 #[tokio::main]
@@ -95,7 +110,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Encrypted database
     let key: [u8; 32] = *b"my_super_secret_key_32_bytes_!!";
     let db_enc = FerrumDB::open(
-        Config::new().with_encryption(key)
+        Config::new()
+            .with_encryption(key)
+            .with_fsync_policy(FsyncPolicy::Periodic(std::time::Duration::from_millis(100)))
     ).await?;
 
     Ok(())
@@ -119,6 +136,8 @@ cargo run --release
 
 ```bash
 cargo run
+# choose durability vs performance
+cargo run -- --fsync=always
 ```
 
 | Command | Description |
@@ -140,6 +159,34 @@ cargo run
 - **Index**: In-memory `HashMap` with `tokio::sync::RwLock`
 - **Encryption**: AES-256-GCM per-block, transparent decorator pattern
 - **Compaction**: Atomic log rewrite via temp-file + rename
+
+---
+
+## ⚠️ Limitations & Trade-offs
+
+FerrumDB makes specific trade-offs for simplicity and performance. Understand these before using:
+
+| Limitation | Why | Workaround |
+|---|---|---|
+| **Entire index in RAM** | O(1) reads require full in-memory HashMap | Best for databases <1GB; not suitable for large datasets |
+| **Single-writer only** | Append-only log with no locking protocol | Use one process per DB file; no multi-process writes |
+| **No range queries** | Secondary indexes store exact value matches only | Use external indexing (e.g., Tantivy) for range scans |
+| **No nested field indexes** | Indexes only top-level JSON fields | Flatten documents before storing |
+| **Blocking compaction** | Atomic rename requires rewriting entire log | Schedule compaction during low-traffic periods |
+| **No WAL or MVCC** | Simple append-only design | Accept occasional read-write contention |
+| **No replication** | Embedded, single-file design | Use at application level if needed |
+
+**Best use cases:**
+- Local-first applications (desktop/mobile)
+- Embedded caching with persistence
+- Session stores, config storage
+- Write-heavy workloads with simple queries
+
+**Not recommended for:**
+- Large datasets (>1GB)
+- Complex queries (JOINs, aggregations)
+- Multi-writer scenarios
+- Read-heavy workloads with memory constraints
 
 ---
 

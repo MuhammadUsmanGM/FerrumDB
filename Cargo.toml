@@ -22,6 +22,13 @@ aes-gcm = "0.10.3"
 async-trait = "0.1.89"
 axum = "0.8.8"
 tower = "0.5.3"
+chrono = "0.4"
+rand = "0.8"
 
 [dev-dependencies]
 tempfile = "3"
+criterion = "0.5"
+
+[[bench]]
+name = "benchmarks"
+harness = false

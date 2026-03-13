@@ -7,6 +7,7 @@ pub enum FerrumError {
     Bincode(bincode::Error),
     Corruption(String),
     InvalidCommand(String),
+    InvalidConfig(String),
     MissingArgument(&'static str),
 }
 
@@ -17,6 +18,7 @@ impl fmt::Display for FerrumError {
             Self::Bincode(e) => write!(f, "Bincode error: {e}"),
             Self::Corruption(e) => write!(f, "Data corruption: {e}"),
             Self::InvalidCommand(cmd) => write!(f, "Unknown command: {cmd}"),
+            Self::InvalidConfig(msg) => write!(f, "Invalid config: {msg}"),
             Self::MissingArgument(arg) => write!(f, "Missing argument: {arg}"),
         }
     }

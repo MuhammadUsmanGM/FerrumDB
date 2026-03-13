@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn, error};
 use serde::{Serialize, Deserialize};
@@ -7,8 +8,21 @@ use serde_json::Value;
 
 use crate::error::FerrumError;
 use crate::io::{AsyncFileSystem, AsyncFile, DiskFileSystem};
+use crate::metrics::Metrics;
 
-use std::time::{SystemTime, Duration};
+use std::time::{SystemTime, Duration, Instant};
+use tokio::sync::Mutex;
+
+/// Controls how often writes are flushed to disk for durability.
+#[derive(Debug, Clone)]
+pub enum FsyncPolicy {
+    /// Sync every write (strongest durability).
+    Always,
+    /// Sync at most once per interval.
+    Periodic(Duration),
+    /// Never sync automatically (fastest, least durable).
+    Never,
+}
 
 /// Types of operations stored in the log.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -76,6 +90,12 @@ pub struct StorageEngine {
     secondary_indexes: RwLock<HashMap<String, HashMap<String, Vec<String>>>>,
     /// Filesystem abstraction
     fs: Box<dyn AsyncFileSystem>,
+    /// Durability policy for log writes
+    fsync_policy: FsyncPolicy,
+    /// Last time data was synced (for periodic policy)
+    last_sync: Mutex<Instant>,
+    /// Operation metrics for observability
+    metrics: Arc<Metrics>,
 }
 
 impl StorageEngine {
@@ -85,6 +105,14 @@ impl StorageEngine {
     }
 
     pub async fn with_fs(path: impl AsRef<std::path::Path>, fs: Box<dyn AsyncFileSystem>) -> Result<Self, FerrumError> {
+        Self::with_fs_and_policy(path, fs, FsyncPolicy::Always).await
+    }
+
+    pub async fn with_fs_and_policy(
+        path: impl AsRef<std::path::Path>,
+        fs: Box<dyn AsyncFileSystem>,
+        fsync_policy: FsyncPolicy,
+    ) -> Result<Self, FerrumError> {
         let path = path.as_ref().to_path_buf();
         let mut index = HashMap::new();
 
@@ -142,6 +170,9 @@ impl StorageEngine {
             log_file: RwLock::new(file),
             secondary_indexes: RwLock::new(HashMap::new()),
             fs,
+            fsync_policy,
+            last_sync: Mutex::new(Instant::now()),
+            metrics: Arc::new(Metrics::new()),
         })
     }
 
@@ -165,6 +196,7 @@ impl StorageEngine {
     /// Retrieve a value from the database by its key.
     /// Returns `None` if the key doesn't exist or has expired.
     pub async fn get(&self, key: &str) -> Option<Value> {
+        self.metrics.record_get();
         let index = self.index.read().await;
         if let Some(entry) = index.get(key) {
             if let Some(expiry) = entry.expiry {
@@ -184,16 +216,17 @@ impl StorageEngine {
 
     /// Store a JSON value with an optional Time-To-Live (TTL).
     pub async fn set_ex(&self, key: String, value: Value, ttl: Option<Duration>) -> Result<Option<Value>, FerrumError> {
+        self.metrics.record_set();
         let expiry = ttl.map(|t| SystemTime::now() + t);
-        let op = LogOp::Set { 
-            key: key.clone(), 
+        let op = LogOp::Set {
+            key: key.clone(),
             value: value.clone(),
-            expiry 
+            expiry
         };
         self.append_to_log(op).await?;
 
         let entry = ValueEntry { value: value.clone(), expiry };
-        
+
         let old_val = {
             let mut index = self.index.write().await;
             index.insert(key.clone(), entry).map(|e| e.value)
@@ -208,18 +241,19 @@ impl StorageEngine {
     /// Remove a key-value pair from the database.
     /// Returns the deleted value if it existed.
     pub async fn delete(&self, key: &str) -> Result<Option<Value>, FerrumError> {
+        self.metrics.record_delete();
         let op = LogOp::Delete { key: key.to_string() };
-        
+
         let old_val = {
             let mut index = self.index.write().await;
             index.remove(key).map(|e| e.value)
         };
-        
+
         if let Some(val) = &old_val {
             self.append_to_log(op).await?;
             self.update_secondary_indexes(key, Some(val), None).await;
         }
-        
+
         Ok(old_val)
     }
 
@@ -330,6 +364,11 @@ impl StorageEngine {
         index.len()
     }
 
+    /// Returns a reference to the metrics tracker.
+    pub fn metrics(&self) -> &Metrics {
+        &self.metrics
+    }
+
     /// Appends a serialized operation to the end of the log file.
     /// Format: [Length (u64)][Serialized JSON Data]
     async fn append_to_log(&self, op: LogOp) -> Result<(), FerrumError> {
@@ -343,8 +382,20 @@ impl StorageEngine {
         file.write_all(&size_bytes).await.map_err(FerrumError::Io)?;
         file.write_all(&encoded).await.map_err(FerrumError::Io)?;
         
-        // Ensure data hit the disk
-        file.sync_data().await.map_err(FerrumError::Io)?;
+        // Ensure data hit the disk per policy
+        match self.fsync_policy {
+            FsyncPolicy::Always => {
+                file.sync_data().await.map_err(FerrumError::Io)?;
+            }
+            FsyncPolicy::Never => {}
+            FsyncPolicy::Periodic(interval) => {
+                let mut last_sync = self.last_sync.lock().await;
+                if last_sync.elapsed() >= interval {
+                    file.sync_data().await.map_err(FerrumError::Io)?;
+                    *last_sync = Instant::now();
+                }
+            }
+        }
         
         Ok(())
     }

@@ -6,6 +6,7 @@ pub mod storage;
 pub mod studio;
 
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
@@ -18,7 +19,7 @@ use rustyline::{Helper, Completer, Hinter, Highlighter, Validator};
 
 use crate::cli::{parse, print_help, Command};
 use crate::metrics::Metrics;
-use crate::storage::StorageEngine;
+use crate::storage::{StorageEngine, FsyncPolicy};
 
 #[derive(Helper, Completer, Hinter, Highlighter, Validator)]
 struct FerrumHelper {
@@ -80,6 +81,37 @@ fn print_banner() {
 }
 
 const DATA_FILE: &str = "ferrum.db";
+const DEFAULT_FSYNC_MS: u64 = 100;
+
+fn parse_fsync_policy(args: &[String]) -> Result<FsyncPolicy, String> {
+    let mut policy = FsyncPolicy::Periodic(Duration::from_millis(DEFAULT_FSYNC_MS));
+
+    for arg in args {
+        if let Some(value) = arg.strip_prefix("--fsync=") {
+            let value = value.trim().to_lowercase();
+            match value.as_str() {
+                "always" => policy = FsyncPolicy::Always,
+                "never" => policy = FsyncPolicy::Never,
+                "periodic" => {
+                    policy = FsyncPolicy::Periodic(Duration::from_millis(DEFAULT_FSYNC_MS))
+                }
+                _ => {
+                    if let Some(ms) = value.strip_prefix("periodic:") {
+                        let ms: u64 = ms.parse().map_err(|_| "invalid periodic ms")?;
+                        if ms == 0 {
+                            return Err("periodic ms must be > 0".to_string());
+                        }
+                        policy = FsyncPolicy::Periodic(Duration::from_millis(ms));
+                    } else {
+                        return Err("fsync must be always|never|periodic[:ms]".to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(policy)
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -90,7 +122,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     print_banner();
 
-    let engine = match StorageEngine::new(DATA_FILE).await {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let fsync_policy = match parse_fsync_policy(&args) {
+        Ok(p) => p,
+        Err(msg) => {
+            eprintln!("Invalid --fsync value: {msg}");
+            eprintln!("Usage: cargo run -- --fsync=always|never|periodic[:ms]");
+            std::process::exit(2);
+        }
+    };
+
+    let engine = match StorageEngine::with_fs_and_policy(DATA_FILE, Box::new(crate::io::DiskFileSystem), fsync_policy).await {
         Ok(e) => Arc::new(e),
         Err(e) => {
             error!("Failed to initialize storage: {e}");

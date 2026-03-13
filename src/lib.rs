@@ -26,17 +26,19 @@ pub mod cli;
 pub mod io;
 pub mod studio;
 
-pub use storage::{StorageEngine, Transaction};
+pub use storage::{StorageEngine, Transaction, FsyncPolicy};
 pub use error::FerrumError;
 pub use metrics::Metrics;
 pub use io::{AsyncFileSystem, DiskFileSystem, EncryptedFileSystem};
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// High-level configuration for FerrumDB.
 pub struct Config {
     pub path: PathBuf,
     pub encryption_key: Option<[u8; 32]>,
+    pub fsync_policy: FsyncPolicy,
 }
 
 impl Default for Config {
@@ -44,6 +46,7 @@ impl Default for Config {
         Self {
             path: PathBuf::from("ferrum.db"),
             encryption_key: None,
+            fsync_policy: FsyncPolicy::Periodic(Duration::from_millis(100)),
         }
     }
 }
@@ -58,6 +61,25 @@ impl Config {
     pub fn with_encryption(mut self, key: [u8; 32]) -> Self {
         self.encryption_key = Some(key);
         self
+    }
+
+    /// Set fsync policy for durability/performance tradeoff.
+    pub fn with_fsync_policy(mut self, policy: FsyncPolicy) -> Self {
+        self.fsync_policy = policy;
+        self
+    }
+
+    /// Build config from environment variables.
+    /// 
+    /// Supported:
+    /// - FERRUMDB_FSYNC=always|never|periodic[:ms]
+    pub fn from_env() -> Result<Self, FerrumError> {
+        let mut cfg = Self::default();
+        if let Ok(val) = std::env::var("FERRUMDB_FSYNC") {
+            let policy = parse_fsync_policy_str(&val)?;
+            cfg.fsync_policy = policy;
+        }
+        Ok(cfg)
     }
 }
 
@@ -74,6 +96,12 @@ impl FerrumDB {
         Self::open(config).await
     }
 
+    /// Open the database using Config built from environment variables.
+    pub async fn open_from_env() -> Result<Self, FerrumError> {
+        let config = Config::from_env()?;
+        Self::open(config).await
+    }
+
     /// Open the database with a specific configuration.
     pub async fn open(config: Config) -> Result<Self, FerrumError> {
         use crate::io::{AsyncFileSystem, DiskFileSystem, EncryptedFileSystem};
@@ -83,7 +111,7 @@ impl FerrumDB {
             fs = Box::new(EncryptedFileSystem::new(fs, key));
         }
 
-        let engine = StorageEngine::with_fs(config.path, fs).await?;
+        let engine = StorageEngine::with_fs_and_policy(config.path, fs, config.fsync_policy).await?;
         Ok(Self { 
             engine: std::sync::Arc::new(engine) 
         })
@@ -117,5 +145,29 @@ impl FerrumDB {
     /// Commit a batch of operations atomically using a Transaction.
     pub async fn commit(&self, tx: Transaction) -> Result<(), FerrumError> {
         self.engine.commit_transaction(tx.build()).await
+    }
+}
+
+fn parse_fsync_policy_str(value: &str) -> Result<FsyncPolicy, FerrumError> {
+    let value = value.trim().to_lowercase();
+    match value.as_str() {
+        "always" => Ok(FsyncPolicy::Always),
+        "never" => Ok(FsyncPolicy::Never),
+        "periodic" => Ok(FsyncPolicy::Periodic(Duration::from_millis(100))),
+        _ => {
+            if let Some(ms) = value.strip_prefix("periodic:") {
+                let ms: u64 = ms
+                    .parse()
+                    .map_err(|_| FerrumError::InvalidConfig("fsync periodic ms must be a number".into()))?;
+                if ms == 0 {
+                    return Err(FerrumError::InvalidConfig("fsync periodic ms must be > 0".into()));
+                }
+                Ok(FsyncPolicy::Periodic(Duration::from_millis(ms)))
+            } else {
+                Err(FerrumError::InvalidConfig(
+                    "fsync must be always|never|periodic[:ms]".into(),
+                ))
+            }
+        }
     }
 }

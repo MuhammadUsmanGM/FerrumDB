@@ -12,7 +12,10 @@ license = { text = "MIT" }
 authors = [
     { name = "Muhammad Usman", email = "muhammadusmangm@gmail.com" }
 ]
-keywords = ["database", "embedded", "json", "rust", "key-value", "document-store"]
+maintainers = [
+    { name = "Muhammad Usman", email = "muhammadusmangm@gmail.com" }
+]
+keywords = ["database", "embedded", "json", "rust", "key-value", "document-store", "local-first"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -27,15 +30,21 @@ classifiers = [
     "Topic :: Database",
     "Topic :: Database :: Database Engines/Servers",
     "Topic :: Software Development :: Embedded Systems",
+    "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "maturin>=1.0"]
 
 [project.urls]
 Homepage = "https://github.com/MuhammadUsmanGM/FerrumDB"
 Repository = "https://github.com/MuhammadUsmanGM/FerrumDB"
-Documentation = "https://github.com/MuhammadUsmanGM/FerrumDB#readme"
+Documentation = "https://github.com/MuhammadUsmanGM/FerrumDB/tree/main/ferrumdb-python"
+Changelog = "https://github.com/MuhammadUsmanGM/FerrumDB/releases"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
 python-source = "python"
 module-name = "ferrumdb"
+include = [{ path = "README.md", format = "sdist" }]

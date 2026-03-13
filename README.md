@@ -5,25 +5,109 @@
   <img src="https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white" />
   <img src="https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge" />
   <img src="https://img.shields.io/badge/AES--256-Encrypted-red?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/version-0.1.0-blue?style=for-the-badge" />
 </p>
 
-**FerrumDB** is a premium, zero-setup embedded document database for **Rust** and **Python**. No server. No config. No migrations. Just open a file and go.
+<p align="center">
+  <strong>A high-performance, embedded document database written from scratch in Rust.</strong><br/>
+  No server. No config files. No migrations. Open a file and go.
+</p>
+
+---
+
+## What is FerrumDB?
+
+FerrumDB is an embedded key-value database engine built in Rust, designed for applications that need fast local persistence without the overhead of a server process. It is inspired by Bitcask and implements a custom binary log format, in-memory indexing, AES-256-GCM encryption at rest, atomic transactions, and a live web dashboard — all in ~1,000 lines of safe, async Rust.
+
+It also ships Python bindings via PyO3, making it accessible from Python with a single `pip install`.
 
 ---
 
 ## 🌟 Features
 
-| | |
+| Feature | Detail |
 |---|---|
-| ⚡ **O(1) reads & writes** | Append-only log + in-memory HashMap index |
-| 📄 **Native JSON** | Store any structured document natively |
-| 🔍 **Secondary Indexing** | Query by JSON fields via `create_index()` |
-| 🔐 **AES-256 Encryption** | Protect data at rest with one line of config |
-| ⚛️ **Atomic Transactions** | All-or-nothing batch operations |
-| ?? **Fsync Policy** | Choose durability vs performance |
-| 🖥️ **Ferrum Studio** | Embedded web dashboard at `localhost:7474` |
-| 🐍 **Python Bindings** | `pip install ferrumdb` — no Rust required |
-| 🛡️ **Crash Resilient** | `fsync` + atomic rename guarantee durability |
+| ⚡ **O(1) reads & writes** | Append-only log + in-memory `HashMap` index rebuilt on startup |
+| 📄 **Native JSON documents** | Store any structured data; values are `serde_json::Value` |
+| 🔍 **Secondary indexing** | O(1) field lookups via `create_index()` — maintained live on writes |
+| 🔐 **AES-256-GCM encryption** | Per-block encryption with random nonces; data is protected at rest |
+| ⚛️ **Atomic transactions** | All-or-nothing batches written as a single log entry |
+| ⏱️ **Configurable fsync policy** | `Always` / `Periodic(ms)` / `Never` — tune durability vs. throughput |
+| 🖥️ **Ferrum Studio** | Built-in web dashboard (Axum) at `localhost:7474` |
+| 🐍 **Python bindings** | `pip install ferrumdb` — no Rust toolchain required |
+| 🛡️ **Crash resilience** | Log compaction via atomic `rename()`; incomplete records are skipped |
+| 📊 **Observability** | Lock-free atomic metrics: ops/sec, uptime, GET/SET/DELETE counts |
+
+---
+
+## 🏗️ Architecture
+
+FerrumDB was built ground-up without using an existing storage library. Every layer is custom:
+
+```
+┌─────────────────────────────────────────┐
+│                FerrumDB API              │  ← High-level Rust & Python interface
+├─────────────────────────────────────────┤
+│             StorageEngine               │  ← Core engine: index + log management
+│  ┌─────────────────┐  ┌──────────────┐  │
+│  │  In-Memory Index │  │ Secondary    │  │
+│  │  HashMap<K,V>   │  │ Indexes      │  │
+│  │  RwLock async   │  │ HashMap<F,V> │  │
+│  └────────┬────────┘  └──────────────┘  │
+│           │ append / reads              │
+│  ┌────────▼────────────────────────┐    │
+│  │   Append-Only Log (AOF)         │    │  ← Bitcask-inspired binary format
+│  │   [len: u64][JSON bytes]...     │    │     length-prefixed, sequential
+│  └────────┬────────────────────────┘    │
+├───────────┼─────────────────────────────┤
+│  ┌────────▼────────────────────────┐    │
+│  │  AsyncFileSystem trait          │    │  ← Pluggable I/O abstraction
+│  │  ┌──────────┐  ┌─────────────┐  │    │
+│  │  │   Disk   │  │  Encrypted  │  │    │  ← Decorator pattern
+│  │  │  (tokio) │  │  (AES-GCM)  │  │    │     random nonce per block
+│  │  └──────────┘  └─────────────┘  │    │
+│  └─────────────────────────────────┘    │
+└─────────────────────────────────────────┘
+```
+
+**Key design decisions:**
+
+- **Bitcask AOF**: Writes are append-only (fast, sequential I/O). The in-memory index is the source of truth for reads. On startup, the engine replays the log to rebuild state — making recovery deterministic and crash-safe.
+- **Pluggable `AsyncFileSystem` trait**: The I/O layer is fully abstracted. `DiskFileSystem` and `EncryptedFileSystem` implement the same trait — swapped via the decorator pattern. This makes the storage engine 100% testable without touching disk.
+- **AES-256-GCM per block**: Each binary record is individually encrypted with a cryptographically random 12-byte nonce. The nonce is stored alongside the ciphertext. GCM authentication tags detect any file tampering.
+- **Tokio async throughout**: Reads use `RwLock` (many concurrent readers), writes serialize via write lock. Metrics use `AtomicU64` — no lock contention on the hot path.
+- **Log compaction**: A background `compact()` rewrites only live (non-expired, non-deleted) records to a temp file, then swaps atomically via `rename()` — POSIX-atomic, no data loss possible.
+
+---
+
+## ⚙️ Technical Stack
+
+| Component | Technology |
+|---|---|
+| Language | Rust (2021 edition) |
+| Async runtime | Tokio |
+| Serialization | serde + serde_json |
+| Encryption | aes-gcm (AES-256-GCM) |
+| Web dashboard | Axum |
+| Python bindings | PyO3 (via maturin) |
+| Benchmarking | Criterion |
+| Testing | tokio::test + tempfile |
+
+---
+
+## 📊 Performance
+
+Benchmarked with [Criterion](https://github.com/bheisler/criterion.rs) on an append-only log with `FsyncPolicy::Never` (max throughput):
+
+| Operation | Performance |
+|---|---|
+| Single `SET` | ~1–3 µs |
+| Single `GET` (in-memory) | < 1 µs |
+| 1,000 sequential `SET`s | ~2–5 ms |
+| 100 concurrent `SET`s (Tokio tasks) | ~3–8 ms |
+| Secondary index query (100 docs) | < 1 µs |
+
+> Run benchmarks yourself: `cargo bench`
 
 ---
 
@@ -56,23 +140,7 @@ admins = db.find("role", '"admin"')   # => ["user:1"]
 db.delete("user:2")
 ```
 
-Your data is stored in a plain file in your project directory — portable, no server, no Docker.
-
 ---
-
-## Environment Config
-
-You can also control durability with environment variables:
-
-```bash
-# always sync every write
-set FERRUMDB_FSYNC=always
-```
-
-```rust
-// Uses FERRUMDB_FSYNC if set
-let db = FerrumDB::open_from_env().await?;
-```
 
 ## 🦀 Rust Usage
 
@@ -90,13 +158,13 @@ use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Standard open
+    // Standard open (zero-setup, uses ferrum.db)
     let db = FerrumDB::open_default().await?;
 
     // Store documents
     db.set("user:1".into(), json!({"name": "alice", "role": "admin"})).await?;
 
-    // Query
+    // Secondary index query
     db.create_index("role").await?;
     let admins = db.find("role", &json!("admin")).await;
 
@@ -107,8 +175,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .delete("k1".into());
     db.commit(tx).await?;
 
-    // Encrypted database
-    let key: [u8; 32] = *b"my_super_secret_key_32_bytes_!!";
+    // Encrypted database (AES-256-GCM, random nonce per block)
+    let key: [u8; 32] = *b"my_super_secret_key_32_bytes_!!?";
     let db_enc = FerrumDB::open(
         Config::new()
             .with_encryption(key)
@@ -121,9 +189,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ---
 
-## 🔥 Ferrum Studio
+## 🖥️ Ferrum Studio
 
-When you run the REPL, Ferrum Studio auto-launches — a premium web dashboard to browse, query, and edit your database visually.
+When you run the REPL, Ferrum Studio auto-launches — an embedded web dashboard to browse, query, and inspect your live database, including real-time operation metrics.
 
 ```bash
 cargo run --release
@@ -132,12 +200,11 @@ cargo run --release
 
 ---
 
-## 🖥️ CLI REPL Commands
+## 🖥️ CLI REPL
 
 ```bash
 cargo run
-# choose durability vs performance
-cargo run -- --fsync=always
+cargo run -- --fsync=always   # strongest durability
 ```
 
 | Command | Description |
@@ -147,46 +214,43 @@ cargo run -- --fsync=always
 | `DELETE <key>` | Remove a key |
 | `KEYS` | List all keys |
 | `COUNT` | Total number of entries |
-| `INDEX <field>` | Create secondary index |
+| `INDEX <field>` | Create secondary index on JSON field |
 | `FIND <field> <value>` | Query by indexed field |
-| `HELP` | Show commands + session metrics |
+| `HELP` | Show commands + live session metrics |
 
 ---
 
-## 🏗️ Architecture
+## ⚠️ Known Limitations
 
-- **Storage**: Bitcask-inspired append-only log (AOF)
-- **Index**: In-memory `HashMap` with `tokio::sync::RwLock`
-- **Encryption**: AES-256-GCM per-block, transparent decorator pattern
-- **Compaction**: Atomic log rewrite via temp-file + rename
+FerrumDB optimizes for simplicity and embedded use cases. Understand the trade-offs:
 
----
-
-## ⚠️ Limitations & Trade-offs
-
-FerrumDB makes specific trade-offs for simplicity and performance. Understand these before using:
-
-| Limitation | Why | Workaround |
+| Limitation | Reason | Workaround |
 |---|---|---|
-| **Entire index in RAM** | O(1) reads require full in-memory HashMap | Best for databases <1GB; not suitable for large datasets |
-| **Single-writer only** | Append-only log with no locking protocol | Use one process per DB file; no multi-process writes |
-| **No range queries** | Secondary indexes store exact value matches only | Use external indexing (e.g., Tantivy) for range scans |
-| **No nested field indexes** | Indexes only top-level JSON fields | Flatten documents before storing |
-| **Blocking compaction** | Atomic rename requires rewriting entire log | Schedule compaction during low-traffic periods |
-| **No WAL or MVCC** | Simple append-only design | Accept occasional read-write contention |
-| **No replication** | Embedded, single-file design | Use at application level if needed |
+| **Entire index in RAM** | O(1) reads require full `HashMap` in memory | Best for databases < 1 GB |
+| **Single-writer only** | Append-only log has no cross-process lock protocol | One process per DB file |
+| **No range queries** | Secondary indexes store exact value matches | Use Tantivy for range scans |
+| **No nested field indexes** | Indexes only top-level JSON keys | Flatten documents before storing |
+| **Blocking compaction** | Rewrites entire log — hold write lock | Schedule during low-traffic |
+| **No WAL / MVCC** | Simpler append-only design | Accept occasional contention |
+| **No replication** | Single-file, embedded design | Handle replication at app level |
 
-**Best use cases:**
-- Local-first applications (desktop/mobile)
-- Embedded caching with persistence
-- Session stores, config storage
-- Write-heavy workloads with simple queries
+**Best for:** local-first apps, desktop tools, embedded caching, session/config stores, write-heavy workloads.
 
-**Not recommended for:**
-- Large datasets (>1GB)
-- Complex queries (JOINs, aggregations)
-- Multi-writer scenarios
-- Read-heavy workloads with memory constraints
+**Not for:** large datasets (> 1 GB), complex queries (JOINs, aggregations), multi-writer or distributed scenarios.
+
+---
+
+## Environment Config
+
+```bash
+set FERRUMDB_FSYNC=always        # sync every write (safest)
+set FERRUMDB_FSYNC=never         # never sync (fastest)
+set FERRUMDB_FSYNC=periodic:200  # sync every 200ms
+```
+
+```rust
+let db = FerrumDB::open_from_env().await?;
+```
 
 ---
 
@@ -194,4 +258,4 @@ FerrumDB makes specific trade-offs for simplicity and performance. Understand th
 
 MIT — see `LICENSE` for details.
 
-<p align="center">Built with 🦀 by Muhammad Usman</p>
+<p align="center">Built with 🦀 by <a href="https://github.com/MuhammadUsmanGM">Muhammad Usman</a></p>

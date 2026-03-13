@@ -1,5 +1,9 @@
 # FerrumDB Python Bindings
 
+[![PyPI](https://img.shields.io/pypi/v/ferrumdb.svg)](https://pypi.org/project/ferrumdb/)
+[![PyPI Downloads](https://img.shields.io/pypi/dm/ferrumdb.svg)](https://pypi.org/project/ferrumdb/)
+[![Python Versions](https://img.shields.io/pypi/pyversions/ferrumdb.svg)](https://pypi.org/project/ferrumdb/)
+
 **FerrumDB** is a zero-setup embedded document database for Python, powered by Rust.
 
 - 🔥 **Zero-setup** — no server, no config, just `open()`

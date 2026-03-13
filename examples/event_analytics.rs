@@ -96,7 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .set_ex(
             "session:abc123".into(),
             json!({"user_id": "user_42", "expires_in": "2 seconds"}),
-            Duration::from_secs(2),
+            Some(Duration::from_secs(2)),
         )
         .await?;
     
@@ -108,10 +108,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 7. Demonstrate encrypted storage for sensitive data
     println!("\n7. Demonstrating encrypted storage...");
-    let key: [u8; 32] = *b"my_super_secret_key_32_bytes_!!";
-    let config = ferrumdb::Config::new()
-        .with_encryption(key)
-        .with_path("events_encrypted.db".into());
+    let key: [u8; 32] = *b"my_super_secret_key_32_bytes_!!?";
+    let config = ferrumdb::Config {
+        path: "events_encrypted.db".into(),
+        encryption_key: Some(key),
+        fsync_policy: ferrumdb::FsyncPolicy::Always,
+    };
     let encrypted_db = FerrumDB::open(config).await?;
     
     encrypted_db.set(

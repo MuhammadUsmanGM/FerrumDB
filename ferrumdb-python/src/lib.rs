@@ -16,33 +16,33 @@
 //! ```
 
 use pyo3::prelude::*;
-use pyo3::exceptions::{PyRuntimeError, PyKeyError};
+use pyo3::exceptions::PyRuntimeError;
 use std::sync::Arc;
-use ferrumdb::{StorageEngine, Transaction, Config, FerrumDB as RustDB};
+use ::ferrumdb::StorageEngine;
 use serde_json::Value;
 
 /// Convert a JSON Value to a Python object
 fn value_to_py(py: Python<'_>, val: Value) -> PyObject {
     match val {
         Value::Null => py.None(),
-        Value::Bool(b) => b.into_pyobject(py).unwrap().into_any().unbind(),
+        Value::Bool(b) => b.to_object(py),
         Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                i.into_pyobject(py).unwrap().into_any().unbind()
+                i.to_object(py)
             } else if let Some(f) = n.as_f64() {
-                f.into_pyobject(py).unwrap().into_any().unbind()
+                f.to_object(py)
             } else {
-                n.to_string().into_pyobject(py).unwrap().into_any().unbind()
+                n.to_string().to_object(py)
             }
         }
-        Value::String(s) => s.into_pyobject(py).unwrap().into_any().unbind(),
+        Value::String(s) => s.to_object(py),
         Value::Array(arr) => {
             let list: Vec<PyObject> = arr.into_iter().map(|v| value_to_py(py, v)).collect();
-            list.into_pyobject(py).unwrap().into_any().unbind()
+            list.to_object(py)
         }
         Value::Object(_) => {
             // Serialize objects as JSON strings by default; use json.loads in Python
-            val.to_string().into_pyobject(py).unwrap().into_any().unbind()
+            val.to_string().to_object(py)
         }
     }
 }
@@ -51,21 +51,7 @@ fn value_to_py(py: Python<'_>, val: Value) -> PyObject {
 fn py_to_value(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
     // Try to get string repr and parse as JSON
     let s = obj.str()?.to_string();
-    serde_json::from_str(&s).map_err(|_| {
-        // Fallback: treat as a plain string value
-        Ok::<Value, ()>(Value::String(s.clone()))
-    }).unwrap_or_else(|_| Value::String(s))
-    .into_py_result_ok()
-}
-
-trait IntoPyResultOk<T> {
-    fn into_py_result_ok(self) -> PyResult<T>;
-}
-
-impl<T> IntoPyResultOk<T> for T {
-    fn into_py_result_ok(self) -> PyResult<T> {
-        Ok(self)
-    }
+    Ok(serde_json::from_str(&s).unwrap_or_else(|_| Value::String(s.clone())))
 }
 
 /// The main FerrumDB Python class.
@@ -103,7 +89,7 @@ impl PyFerrumDB {
     /// db.set("counter", 42)
     /// db.set("greeting", "hello world")
     /// ```
-    pub fn set(&self, py: Python<'_>, key: String, value: Bound<'_, PyAny>) -> PyResult<()> {
+    pub fn set(&self, key: String, value: Bound<'_, PyAny>) -> PyResult<()> {
         let json_val = py_to_value(&value)?;
         self.rt.block_on(self.engine.set(key, json_val))
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
@@ -177,6 +163,32 @@ impl PyFerrumDB {
         let count = self.rt.block_on(self.engine.len());
         format!("<FerrumDB entries={}>", count)
     }
+
+    /// Commit a transaction atomically.
+    ///
+    /// ```python
+    /// tx = Transaction()
+    /// tx.set("key1", {"value": 1})
+    /// tx.set("key2", {"value": 2})
+    /// db.commit(tx)
+    /// ```
+    pub fn commit(&self, tx: &mut PyTransaction) -> PyResult<()> {
+        let ops: Vec<::ferrumdb::storage::LogOp> = tx.ops.iter().map(|(key, val_opt)| {
+            if let Some(ref v) = val_opt {
+                ::ferrumdb::storage::LogOp::Set {
+                    key: key.clone(),
+                    value: v.clone(),
+                    expiry: None
+                }
+            } else {
+                ::ferrumdb::storage::LogOp::Delete { key: key.clone() }
+            }
+        }).collect();
+        
+        self.rt.block_on(self.engine.commit_transaction(ops))
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        Ok(())
+    }
 }
 
 /// A transaction builder. Use with `db.commit()`.
@@ -193,7 +205,7 @@ impl PyTransaction {
     }
 
     /// Stage a SET operation.
-    pub fn set(&mut self, py: Python<'_>, key: String, value: Bound<'_, PyAny>) -> PyResult<()> {
+    pub fn set(&mut self, key: String, value: Bound<'_, PyAny>) -> PyResult<()> {
         let json_val = py_to_value(&value)?;
         self.ops.push((key, Some(json_val)));
         Ok(())

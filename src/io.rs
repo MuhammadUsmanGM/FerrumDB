@@ -6,6 +6,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Nonce
 };
+use rand::RngCore;
 
 /// Abstraction for filesystem operations to support different backends (Disk, Memory, WASM).
 #[async_trait]
@@ -165,13 +166,19 @@ impl EncryptedFile {
 impl AsyncFile for EncryptedFile {
     async fn write_all(&mut self, buf: &[u8]) -> IoResult<()> {
         let cipher = Aes256Gcm::new_from_slice(&self.key).map_err(|e| IoError::new(ErrorKind::Other, e.to_string()))?;
-        let nonce_bytes = [0u8; 12]; // Note: In production, nonces should be unique/sequential.
+        
+        // Generate a cryptographically random nonce per write.
+        // Reusing a nonce with the same key breaks AES-GCM security entirely.
+        let mut nonce_bytes = [0u8; 12];
+        rand::thread_rng().fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
         
         let ciphertext = cipher.encrypt(nonce, buf)
             .map_err(|e| IoError::new(ErrorKind::Other, e.to_string()))?;
         
+        // Format: [nonce (12 bytes)] [ciphertext_len (8 bytes)] [ciphertext]
         let len = ciphertext.len() as u64;
+        self.inner.write_all(&nonce_bytes).await?;
         self.inner.write_all(&len.to_le_bytes()).await?;
         self.inner.write_all(&ciphertext).await
     }
@@ -181,11 +188,17 @@ impl AsyncFile for EncryptedFile {
         self.inner.read_to_end(&mut raw_data).await?;
         
         let cipher = Aes256Gcm::new_from_slice(&self.key).map_err(|e| IoError::new(ErrorKind::Other, e.to_string()))?;
-        let nonce_bytes = [0u8; 12];
-        let nonce = Nonce::from_slice(&nonce_bytes);
 
+        // Format: [nonce (12 bytes)] [ciphertext_len (8 bytes)] [ciphertext]
         let mut cursor = 0;
         while cursor < raw_data.len() {
+            // Read nonce (12 bytes)
+            if cursor + 12 > raw_data.len() { break; }
+            let nonce_bytes: [u8; 12] = raw_data[cursor..cursor+12].try_into().unwrap();
+            let nonce = Nonce::from_slice(&nonce_bytes);
+            cursor += 12;
+
+            // Read ciphertext length (8 bytes)
             if cursor + 8 > raw_data.len() { break; }
             let len_bytes: [u8; 8] = raw_data[cursor..cursor+8].try_into().unwrap();
             let len = u64::from_le_bytes(len_bytes) as usize;

@@ -111,7 +111,9 @@ Benchmarked with [Criterion](https://github.com/bheisler/criterion.rs) on an app
 
 ---
 
-## 🐍 Python Usage
+## 🐍 Python Installation & Usage
+
+FerrumDB is available on PyPI. Install it using pip:
 
 ```bash
 pip install ferrumdb
@@ -142,10 +144,19 @@ db.delete("user:2")
 
 ---
 
-## 🦀 Rust Usage
+## 🦀 Rust Installation & Usage
+
+FerrumDB is available on crates.io. Add it to your project:
+
+```bash
+cargo add ferrumdb
+cargo add tokio -F full
+cargo add serde_json
+```
+
+Or manually add to your `Cargo.toml`:
 
 ```toml
-# Cargo.toml
 [dependencies]
 ferrumdb = "0.1.0"
 tokio = { version = "1", features = ["full"] }

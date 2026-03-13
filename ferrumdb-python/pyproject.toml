@@ -45,6 +45,6 @@ Changelog = "https://github.com/MuhammadUsmanGM/FerrumDB/releases"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
-python-source = "python"
+
 module-name = "ferrumdb"
-include = [{ path = "README.md", format = "sdist" }]
+

@@ -75,6 +75,11 @@ impl AsyncFileSystem for DiskFileSystem {
     }
 
     async fn rename(&self, from: &Path, to: &Path) -> IoResult<()> {
+        // On Windows, rename fails if the target already exists (unlike POSIX).
+        // Remove the target first to make this safe across platforms.
+        if to.exists() {
+            fs::remove_file(to).await?;
+        }
         fs::rename(from, to).await
     }
 

@@ -182,8 +182,17 @@ impl StorageEngine {
                             Self::apply_op_to_index(&mut index, &op, data_offset, size);
                         }
                         Err(e) => {
-                            error!("Failed to deserialize log entry at offset {}: {}", cursor, e);
-                            return Err(FerrumError::Corruption(format!("At offset {}: {}", cursor, e)));
+                            // A crash between writing the length prefix and finishing the
+                            // data write produces a record whose bytes are present but
+                            // cannot be deserialized. Treat this the same as a truncated
+                            // record: log a warning and stop replaying — all subsequent
+                            // bytes are unreliable.
+                            warn!(
+                                "Corrupt record at offset {} (likely partial write from crash): {}. \
+                                 Stopping recovery here; {} entries recovered.",
+                                cursor, e, index.len()
+                            );
+                            break;
                         }
                     }
                     cursor = data_offset + size;
@@ -262,6 +271,7 @@ impl StorageEngine {
 
     /// Retrieve a value from the database by its key.
     /// Returns `None` if the key doesn't exist or has expired.
+    /// Expired keys are lazily removed from the index on access.
     pub async fn get(&self, key: &str) -> Option<Value> {
         self.metrics.record_get();
         let entry = {
@@ -271,9 +281,18 @@ impl StorageEngine {
 
         let entry = entry?;
 
-        // Check expiry
+        // Check expiry — lazily evict expired keys from the index
         if let Some(expiry) = entry.expiry {
             if SystemTime::now() > expiry {
+                let mut index = self.index.write().await;
+                // Re-check under write lock (another task may have already removed it)
+                if let Some(e) = index.get(key) {
+                    if let Some(exp) = e.expiry {
+                        if SystemTime::now() > exp {
+                            index.remove(key);
+                        }
+                    }
+                }
                 return None;
             }
         }
@@ -528,46 +547,68 @@ impl StorageEngine {
     }
 
     /// Compacts the log file by writing only live data to a new file.
+    ///
+    /// Holds exclusive locks for the entire operation to prevent writes from
+    /// being lost between the snapshot and the file swap.
     pub async fn compact(&self, current_path: impl AsRef<Path>) -> Result<(), FerrumError> {
         let current_path = current_path.as_ref();
         let temp_path = current_path.with_extension("db.tmp");
+
+        // Acquire all write locks upfront to block concurrent writes during compaction.
+        // This prevents the race where writes append to the old log file after we
+        // snapshot but before we swap — those writes would be silently lost.
+        let mut log_file = self.log_file.write().await;
+        let mut write_offset = self.write_offset.lock().await;
+        let mut index = self.index.write().await;
 
         // 1. Create temp file
         let mut temp_file = self.fs.open_write(&temp_path).await.map_err(FerrumError::Io)?;
 
         // 2. Collect live entries and read their values from disk
-        let live_entries: Vec<(String, IndexEntry)> = {
-            let index = self.index.read().await;
-            index.iter()
-                .filter(|(_, entry)| {
-                    if let Some(expiry) = entry.expiry {
-                        SystemTime::now() < expiry
-                    } else {
-                        true
-                    }
-                })
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect()
-        };
+        let live_entries: Vec<(String, IndexEntry)> = index.iter()
+            .filter(|(_, entry)| {
+                if let Some(expiry) = entry.expiry {
+                    SystemTime::now() < expiry
+                } else {
+                    true
+                }
+            })
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
 
         // 3. Write live data to temp file and build new index
         let mut new_index = HashMap::new();
         let mut new_offset: u64 = 0;
 
         for (key, entry) in &live_entries {
-            if let Ok(Some(value)) = self.read_value_at(entry, key).await {
-                let op = LogOp::Set {
+            // Read value from the old log file (still valid, we hold the lock)
+            let data = self.fs.read_at(&self.path, entry.offset, entry.size as usize)
+                .await.map_err(FerrumError::Io)?;
+            let op: LogOp = bincode::deserialize(&data)
+                .map_err(|e| FerrumError::Corruption(format!("Compaction read error for '{}': {}", key, e)))?;
+
+            let value = match &op {
+                LogOp::Set { value, .. } => Some(value.clone()),
+                LogOp::Transaction { ops } => {
+                    ops.iter().rev().find_map(|sub_op| match sub_op {
+                        LogOp::Set { key: k, value, .. } if k == key => Some(value.clone()),
+                        _ => None,
+                    })
+                }
+                _ => None,
+            };
+
+            if let Some(value) = value {
+                let new_op = LogOp::Set {
                     key: key.clone(),
                     value,
-                    expiry: entry.expiry
+                    expiry: entry.expiry,
                 };
-                let encoded = bincode::serialize(&op).map_err(|e| FerrumError::Corruption(e.to_string()))?;
+                let encoded = bincode::serialize(&new_op).map_err(|e| FerrumError::Corruption(e.to_string()))?;
                 let size = encoded.len() as u64;
-                let size_bytes = size.to_le_bytes();
 
-                // Write as single combined block
                 let mut combined = Vec::with_capacity(8 + encoded.len());
-                combined.extend_from_slice(&size_bytes);
+                combined.extend_from_slice(&size.to_le_bytes());
                 combined.extend_from_slice(&encoded);
 
                 let data_offset = new_offset + 8;
@@ -584,23 +625,21 @@ impl StorageEngine {
         }
         temp_file.sync_all().await.map_err(FerrumError::Io)?;
 
-        // 4. Atomic swap under write lock
-        {
-            let mut log_file = self.log_file.write().await;
-            let mut write_offset = self.write_offset.lock().await;
+        // 4. Atomic swap — rename temp over the current file, reopen for appending
+        self.fs.rename(&temp_path, current_path).await.map_err(FerrumError::Io)?;
+        *log_file = self.fs.open_append(current_path).await.map_err(FerrumError::Io)?;
+        *write_offset = new_offset;
 
-            self.fs.rename(&temp_path, current_path).await.map_err(FerrumError::Io)?;
-            *log_file = self.fs.open_append(current_path).await.map_err(FerrumError::Io)?;
-            *write_offset = new_offset;
-        }
+        // 5. Replace the in-memory index with new offsets
+        let live_count = new_index.len();
+        *index = new_index;
 
-        // 5. Update the in-memory index with new offsets
-        {
-            let mut index = self.index.write().await;
-            *index = new_index;
-        }
+        // Drop locks before logging (logging doesn't need them)
+        drop(index);
+        drop(write_offset);
+        drop(log_file);
 
-        info!("Compaction completed. Live entries: {}", self.len().await);
+        info!("Compaction completed. Live entries: {}", live_count);
         Ok(())
     }
 }

@@ -1,7 +1,7 @@
 use std::path::Path;
 use async_trait::async_trait;
 use tokio::fs::{self, File, OpenOptions};
-use tokio::io::{AsyncReadExt, AsyncWriteExt, Result as IoResult, Error as IoError, ErrorKind};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, AsyncSeekExt, Result as IoResult, Error as IoError, ErrorKind};
 use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Nonce
@@ -14,6 +14,8 @@ pub trait AsyncFileSystem: Send + Sync {
     async fn open_append(&self, path: &Path) -> IoResult<Box<dyn AsyncFile>>;
     async fn open_read(&self, path: &Path) -> IoResult<Box<dyn AsyncFile>>;
     async fn open_write(&self, path: &Path) -> IoResult<Box<dyn AsyncFile>>;
+    /// Read exactly `len` bytes starting at byte `offset` from the file at `path`.
+    async fn read_at(&self, path: &Path, offset: u64, len: usize) -> IoResult<Vec<u8>>;
     async fn create_dir_all(&self, path: &Path) -> IoResult<()>;
     async fn rename(&self, from: &Path, to: &Path) -> IoResult<()>;
     async fn exists(&self, path: &Path) -> bool;
@@ -58,6 +60,14 @@ impl AsyncFileSystem for DiskFileSystem {
             .open(path)
             .await?;
         Ok(Box::new(DiskFile { file }))
+    }
+
+    async fn read_at(&self, path: &Path, offset: u64, len: usize) -> IoResult<Vec<u8>> {
+        let mut file = File::open(path).await?;
+        file.seek(std::io::SeekFrom::Start(offset)).await?;
+        let mut buf = vec![0u8; len];
+        file.read_exact(&mut buf).await?;
+        Ok(buf)
     }
 
     async fn create_dir_all(&self, path: &Path) -> IoResult<()> {
@@ -132,6 +142,22 @@ impl AsyncFileSystem for EncryptedFileSystem {
     async fn open_write(&self, path: &Path) -> IoResult<Box<dyn AsyncFile>> {
         let file = self.inner.open_write(path).await?;
         Ok(Box::new(EncryptedFile::new(file, self.key)))
+    }
+
+    async fn read_at(&self, path: &Path, offset: u64, len: usize) -> IoResult<Vec<u8>> {
+        // For encrypted FS, offsets stored in the index are positions within the
+        // decrypted byte stream (since recovery decrypts everything via read_to_end).
+        // We decrypt the entire file and return the requested slice.
+        let mut reader = self.open_read(path).await?;
+        let mut decrypted = Vec::new();
+        reader.read_to_end(&mut decrypted).await?;
+
+        let start = offset as usize;
+        let end = start + len;
+        if end > decrypted.len() {
+            return Err(IoError::new(ErrorKind::UnexpectedEof, "read_at: offset+len exceeds decrypted data"));
+        }
+        Ok(decrypted[start..end].to_vec())
     }
 
     async fn create_dir_all(&self, path: &Path) -> IoResult<()> {

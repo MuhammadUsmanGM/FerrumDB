@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn, error};
@@ -27,20 +27,23 @@ pub enum FsyncPolicy {
 /// Types of operations stored in the log.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum LogOp {
-    Set { 
-        key: String, 
-        value: Value, 
-        expiry: Option<SystemTime> 
+    Set {
+        key: String,
+        value: Value,
+        expiry: Option<SystemTime>
     },
     Delete { key: String },
     /// A group of operations that must be applied together.
     Transaction { ops: Vec<LogOp> },
 }
 
-/// Value stored in the in-memory index.
+/// Index entry storing only the file offset and size — values are read from disk on demand.
 #[derive(Clone, Debug)]
-struct ValueEntry {
-    value: Value,
+struct IndexEntry {
+    /// Byte offset in the log file where this record's data begins (after the length prefix).
+    offset: u64,
+    /// Size of the serialized LogOp JSON data.
+    size: u64,
     expiry: Option<SystemTime>,
 }
 
@@ -80,16 +83,21 @@ impl Transaction {
     }
 }
 
-/// Core key-value storage engine with in-memory index and append-only log.
+/// Core key-value storage engine with in-memory offset index and append-only log.
+/// Values are NOT stored in memory — only file offsets. Reads go to disk.
 pub struct StorageEngine {
-    /// In-memory primary index: key -> ValueEntry
-    index: RwLock<HashMap<String, ValueEntry>>,
+    /// In-memory index: key -> IndexEntry (offset + size, no values)
+    index: RwLock<HashMap<String, IndexEntry>>,
     /// Handle to the log file for appending
     log_file: RwLock<Box<dyn AsyncFile>>,
+    /// Current write offset in the log file (tracks append position)
+    write_offset: Mutex<u64>,
     /// Secondary indexes: IndexName -> {ValueAsString -> [Keys]}
     secondary_indexes: RwLock<HashMap<String, HashMap<String, Vec<String>>>>,
     /// Filesystem abstraction
     fs: Box<dyn AsyncFileSystem>,
+    /// Path to the database file
+    path: PathBuf,
     /// Durability policy for log writes
     fsync_policy: FsyncPolicy,
     /// Last time data was synced (for periodic policy)
@@ -124,72 +132,112 @@ impl StorageEngine {
         // Open or create the log file
         let file = fs.open_append(&path).await.map_err(FerrumError::Io)?;
 
-        // Recovery: Read the entire file to rebuild the index
+        let mut write_offset: u64 = 0;
+
+        // Recovery: Read the entire file to rebuild the offset index
         if fs.exists(&path).await {
             let file_len = file.metadata_len().await.map_err(FerrumError::Io)?;
             if file_len > 0 {
                 info!("Recovering FerrumDB from log: {} ({} bytes)", path.display(), file_len);
-                
-                // Re-open for reading from the start for recovery
+
                 let mut reader = fs.open_read(&path).await.map_err(FerrumError::Io)?;
                 let mut buffer = Vec::new();
                 reader.read_to_end(&mut buffer).await.map_err(FerrumError::Io)?;
 
-                let mut cursor = 0;
-                while cursor < buffer.len() {
-                    // Peek size (u64)
-                    if cursor + 8 > buffer.len() { break; }
-                    let size_bytes: [u8; 8] = buffer[cursor..cursor + 8].try_into().unwrap();
-                    let size = u64::from_le_bytes(size_bytes) as usize;
-                    cursor += 8;
+                let mut cursor: u64 = 0;
+                while (cursor as usize) < buffer.len() {
+                    // Read size prefix (u64)
+                    if (cursor as usize) + 8 > buffer.len() { break; }
+                    let size_bytes: [u8; 8] = buffer[cursor as usize..(cursor as usize) + 8].try_into().unwrap();
+                    let size = u64::from_le_bytes(size_bytes);
+                    let data_offset = cursor + 8;
 
-                    if cursor + size > buffer.len() {
+                    if (data_offset as usize) + (size as usize) > buffer.len() {
                         warn!("Incomplete record at end of log, truncating during next write.");
                         break;
                     }
 
-                    let entry_data = &buffer[cursor..cursor + size];
+                    let entry_data = &buffer[data_offset as usize..(data_offset as usize) + (size as usize)];
                     match serde_json::from_slice::<LogOp>(entry_data) {
                         Ok(op) => {
-                            Self::apply_op_to_index(&mut index, op);
+                            Self::apply_op_to_index(&mut index, &op, data_offset, size);
                         }
                         Err(e) => {
                             error!("Failed to deserialize log entry at offset {}: {}", cursor, e);
                             return Err(FerrumError::Corruption(format!("At offset {}: {}", cursor, e)));
                         }
                     }
-                    cursor += size;
+                    cursor = data_offset + size;
                 }
+                write_offset = cursor;
             }
         }
 
-        info!("Storage engine initialized with {} entries", index.len());
+        info!("Storage engine initialized with {} entries (offset-based index)", index.len());
 
         Ok(Self {
             index: RwLock::new(index),
             log_file: RwLock::new(file),
+            write_offset: Mutex::new(write_offset),
             secondary_indexes: RwLock::new(HashMap::new()),
             fs,
+            path,
             fsync_policy,
             last_sync: Mutex::new(Instant::now()),
             metrics: Arc::new(Metrics::new()),
         })
     }
 
-    /// Helper to apply a LogOp to the in-memory index.
-    fn apply_op_to_index(index: &mut HashMap<String, ValueEntry>, op: LogOp) {
+    /// Apply a LogOp to the in-memory offset index during recovery.
+    fn apply_op_to_index(index: &mut HashMap<String, IndexEntry>, op: &LogOp, data_offset: u64, size: u64) {
         match op {
-            LogOp::Set { key, value, expiry } => {
-                index.insert(key, ValueEntry { value, expiry });
+            LogOp::Set { key, expiry, .. } => {
+                index.insert(key.clone(), IndexEntry { offset: data_offset, size, expiry: *expiry });
             }
             LogOp::Delete { key } => {
-                index.remove(&key);
+                index.remove(key);
             }
             LogOp::Transaction { ops } => {
+                // For transactions, each sub-op is inside the same serialized blob.
+                // We store the transaction's offset for each SET key — on read, we
+                // deserialize the full transaction and extract the value.
                 for sub_op in ops {
-                    Self::apply_op_to_index(index, sub_op);
+                    match sub_op {
+                        LogOp::Set { key, expiry, .. } => {
+                            index.insert(key.clone(), IndexEntry { offset: data_offset, size, expiry: *expiry });
+                        }
+                        LogOp::Delete { key } => {
+                            index.remove(key);
+                        }
+                        _ => {}
+                    }
                 }
             }
+        }
+    }
+
+    /// Read a value from disk given an index entry.
+    async fn read_value_at(&self, entry: &IndexEntry, key: &str) -> Result<Option<Value>, FerrumError> {
+        let data = self.fs.read_at(&self.path, entry.offset, entry.size as usize)
+            .await.map_err(FerrumError::Io)?;
+
+        let op: LogOp = serde_json::from_slice(&data)
+            .map_err(|e| FerrumError::Corruption(format!("Failed to read value for key '{}': {}", key, e)))?;
+
+        match op {
+            LogOp::Set { value, .. } => Ok(Some(value)),
+            LogOp::Transaction { ops } => {
+                // Find the last SET for this key within the transaction
+                for sub_op in ops.into_iter().rev() {
+                    match sub_op {
+                        LogOp::Set { key: k, value, .. } if k == key => return Ok(Some(value)),
+                        LogOp::Delete { key: k } if k == key => return Ok(None),
+                        _ => {}
+                    }
+                }
+                Ok(None)
+            }
+            _ => Ok(None),
         }
     }
 
@@ -197,16 +245,28 @@ impl StorageEngine {
     /// Returns `None` if the key doesn't exist or has expired.
     pub async fn get(&self, key: &str) -> Option<Value> {
         self.metrics.record_get();
-        let index = self.index.read().await;
-        if let Some(entry) = index.get(key) {
-            if let Some(expiry) = entry.expiry {
-                if SystemTime::now() > expiry {
-                    return None;
-                }
+        let entry = {
+            let index = self.index.read().await;
+            index.get(key).cloned()
+        };
+
+        let entry = entry?;
+
+        // Check expiry
+        if let Some(expiry) = entry.expiry {
+            if SystemTime::now() > expiry {
+                return None;
             }
-            return Some(entry.value.clone());
         }
-        None
+
+        // Read value from disk
+        match self.read_value_at(&entry, key).await {
+            Ok(val) => val,
+            Err(e) => {
+                error!("Failed to read value for key '{}': {}", key, e);
+                None
+            }
+        }
     }
 
     /// Store a JSON value with no expiration.
@@ -223,14 +283,28 @@ impl StorageEngine {
             value: value.clone(),
             expiry
         };
-        self.append_to_log(op).await?;
 
-        let entry = ValueEntry { value: value.clone(), expiry };
+        // Serialize and write, capturing the offset
+        let encoded = serde_json::to_vec(&op).map_err(|e| FerrumError::Corruption(e.to_string()))?;
+        let size = encoded.len() as u64;
+        let data_offset = self.append_raw_to_log(&encoded).await?;
 
+        let entry = IndexEntry { offset: data_offset, size, expiry };
+
+        // Read old value for secondary index update (must happen before index update)
         let old_val = {
-            let mut index = self.index.write().await;
-            index.insert(key.clone(), entry).map(|e| e.value)
+            let index = self.index.read().await;
+            if let Some(old_entry) = index.get(&key) {
+                self.read_value_at(old_entry, &key).await.ok().flatten()
+            } else {
+                None
+            }
         };
+
+        {
+            let mut index = self.index.write().await;
+            index.insert(key.clone(), entry);
+        }
 
         // Update secondary indexes
         self.update_secondary_indexes(&key, old_val.as_ref(), Some(&value)).await;
@@ -242,16 +316,28 @@ impl StorageEngine {
     /// Returns the deleted value if it existed.
     pub async fn delete(&self, key: &str) -> Result<Option<Value>, FerrumError> {
         self.metrics.record_delete();
-        let op = LogOp::Delete { key: key.to_string() };
 
+        // Read old value before removing from index
         let old_val = {
-            let mut index = self.index.write().await;
-            index.remove(key).map(|e| e.value)
+            let index = self.index.read().await;
+            if let Some(entry) = index.get(key) {
+                self.read_value_at(entry, key).await.ok().flatten()
+            } else {
+                None
+            }
         };
 
-        if let Some(val) = &old_val {
-            self.append_to_log(op).await?;
-            self.update_secondary_indexes(key, Some(val), None).await;
+        if old_val.is_some() {
+            let op = LogOp::Delete { key: key.to_string() };
+            let encoded = serde_json::to_vec(&op).map_err(|e| FerrumError::Corruption(e.to_string()))?;
+            self.append_raw_to_log(&encoded).await?;
+
+            {
+                let mut index = self.index.write().await;
+                index.remove(key);
+            }
+
+            self.update_secondary_indexes(key, old_val.as_ref(), None).await;
         }
 
         Ok(old_val)
@@ -262,11 +348,18 @@ impl StorageEngine {
         let mut sec_indexes = self.secondary_indexes.write().await;
         let mut new_index: HashMap<String, Vec<String>> = HashMap::new();
 
-        let index = self.index.read().await;
-        for (key, entry) in index.iter() {
-            if let Some(val) = entry.value.get(field) {
-                let val_str = val.to_string();
-                new_index.entry(val_str).or_default().push(key.clone());
+        // Must read values from disk to build the secondary index
+        let entries: Vec<(String, IndexEntry)> = {
+            let index = self.index.read().await;
+            index.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        };
+
+        for (key, entry) in &entries {
+            if let Ok(Some(value)) = self.read_value_at(entry, key).await {
+                if let Some(val) = value.get(field) {
+                    let val_str = val.to_string();
+                    new_index.entry(val_str).or_default().push(key.clone());
+                }
             }
         }
 
@@ -325,7 +418,9 @@ impl StorageEngine {
         if ops.is_empty() { return Ok(()); }
 
         let tx_op = LogOp::Transaction { ops: ops.clone() };
-        self.append_to_log(tx_op).await?;
+        let encoded = serde_json::to_vec(&tx_op).map_err(|e| FerrumError::Corruption(e.to_string()))?;
+        let size = encoded.len() as u64;
+        let data_offset = self.append_raw_to_log(&encoded).await?;
 
         // Apply all ops to memory index under a single write lock for consistency
         let mut index = self.index.write().await;
@@ -334,16 +429,23 @@ impl StorageEngine {
         for op in ops {
             match op {
                 LogOp::Set { key, value, expiry } => {
-                    let old_val = index.insert(key.clone(), ValueEntry { value: value.clone(), expiry }).map(|e| e.value);
+                    // Read old value for secondary index update
+                    let old_val = if let Some(old_entry) = index.get(&key) {
+                        self.read_value_at(old_entry, &key).await.ok().flatten()
+                    } else {
+                        None
+                    };
+
+                    index.insert(key.clone(), IndexEntry { offset: data_offset, size, expiry });
                     Self::update_secondary_indexes_internal(&mut sec_indexes, &key, old_val.as_ref(), Some(&value));
                 }
                 LogOp::Delete { key } => {
-                    if let Some(old_val) = index.remove(&key).map(|e| e.value) {
-                        Self::update_secondary_indexes_internal(&mut sec_indexes, &key, Some(&old_val), None);
+                    if let Some(old_entry) = index.remove(&key) {
+                        let old_val = self.read_value_at(&old_entry, &key).await.ok().flatten();
+                        Self::update_secondary_indexes_internal(&mut sec_indexes, &key, old_val.as_ref(), None);
                     }
                 }
                 LogOp::Transaction { .. } => {
-                    // Nested transactions are not supported via this API for now
                     warn!("Nested transactions found in commit_transaction, skipping sub-ops.");
                 }
             }
@@ -369,20 +471,26 @@ impl StorageEngine {
         &self.metrics
     }
 
-    /// Appends a serialized operation to the end of the log file.
-    /// Format: [Length (u64)][Serialized JSON Data]
-    async fn append_to_log(&self, op: LogOp) -> Result<(), FerrumError> {
-        let encoded = serde_json::to_vec(&op).map_err(|e| FerrumError::Corruption(e.to_string()))?;
+    /// Appends raw serialized data to the log with a length prefix.
+    /// Returns the byte offset where the data (not the length prefix) was written.
+    async fn append_raw_to_log(&self, encoded: &[u8]) -> Result<u64, FerrumError> {
         let size = encoded.len() as u64;
         let size_bytes = size.to_le_bytes();
 
+        // Combine size prefix and data into a single write for atomicity
+        let mut combined = Vec::with_capacity(8 + encoded.len());
+        combined.extend_from_slice(&size_bytes);
+        combined.extend_from_slice(encoded);
+
         let mut file = self.log_file.write().await;
-        
-        // Write size prefix then data
-        file.write_all(&size_bytes).await.map_err(FerrumError::Io)?;
-        file.write_all(&encoded).await.map_err(FerrumError::Io)?;
-        
-        // Ensure data hit the disk per policy
+        let mut offset = self.write_offset.lock().await;
+
+        let data_offset = *offset + 8; // data starts after the 8-byte length prefix
+
+        file.write_all(&combined).await.map_err(FerrumError::Io)?;
+        *offset += combined.len() as u64;
+
+        // Fsync per policy
         match self.fsync_policy {
             FsyncPolicy::Always => {
                 file.sync_data().await.map_err(FerrumError::Io)?;
@@ -396,20 +504,20 @@ impl StorageEngine {
                 }
             }
         }
-        
-        Ok(())
+
+        Ok(data_offset)
     }
 
-    /// Compasts the log file by writing only live data to a new file.
+    /// Compacts the log file by writing only live data to a new file.
     pub async fn compact(&self, current_path: impl AsRef<Path>) -> Result<(), FerrumError> {
         let current_path = current_path.as_ref();
         let temp_path = current_path.with_extension("db.tmp");
 
-        // 1. Create temp file using abstracted FS
+        // 1. Create temp file
         let mut temp_file = self.fs.open_write(&temp_path).await.map_err(FerrumError::Io)?;
 
-        // 2. Collect live data under read lock
-        let live_data: Vec<(String, ValueEntry)> = {
+        // 2. Collect live entries and read their values from disk
+        let live_entries: Vec<(String, IndexEntry)> = {
             let index = self.index.read().await;
             index.iter()
                 .filter(|(_, entry)| {
@@ -423,28 +531,54 @@ impl StorageEngine {
                 .collect()
         };
 
-        // 3. Write live data to temp file
-        for (key, entry) in live_data {
-            let op = LogOp::Set { 
-                key, 
-                value: entry.value, 
-                expiry: entry.expiry 
-            };
-            let encoded = serde_json::to_vec(&op).map_err(|e| FerrumError::Corruption(e.to_string()))?;
-            let size = encoded.len() as u64;
-            temp_file.write_all(&size.to_le_bytes()).await.map_err(FerrumError::Io)?;
-            temp_file.write_all(&encoded).await.map_err(FerrumError::Io)?;
+        // 3. Write live data to temp file and build new index
+        let mut new_index = HashMap::new();
+        let mut new_offset: u64 = 0;
+
+        for (key, entry) in &live_entries {
+            if let Ok(Some(value)) = self.read_value_at(entry, key).await {
+                let op = LogOp::Set {
+                    key: key.clone(),
+                    value,
+                    expiry: entry.expiry
+                };
+                let encoded = serde_json::to_vec(&op).map_err(|e| FerrumError::Corruption(e.to_string()))?;
+                let size = encoded.len() as u64;
+                let size_bytes = size.to_le_bytes();
+
+                // Write as single combined block
+                let mut combined = Vec::with_capacity(8 + encoded.len());
+                combined.extend_from_slice(&size_bytes);
+                combined.extend_from_slice(&encoded);
+
+                let data_offset = new_offset + 8;
+                temp_file.write_all(&combined).await.map_err(FerrumError::Io)?;
+
+                new_index.insert(key.clone(), IndexEntry {
+                    offset: data_offset,
+                    size,
+                    expiry: entry.expiry,
+                });
+
+                new_offset += combined.len() as u64;
+            }
         }
         temp_file.sync_all().await.map_err(FerrumError::Io)?;
 
         // 4. Atomic swap under write lock
         {
             let mut log_file = self.log_file.write().await;
-            // Rename is atomic on most OSs
+            let mut write_offset = self.write_offset.lock().await;
+
             self.fs.rename(&temp_path, current_path).await.map_err(FerrumError::Io)?;
-            
-            // Re-open log file handle
             *log_file = self.fs.open_append(current_path).await.map_err(FerrumError::Io)?;
+            *write_offset = new_offset;
+        }
+
+        // 5. Update the in-memory index with new offsets
+        {
+            let mut index = self.index.write().await;
+            *index = new_index;
         }
 
         info!("Compaction completed. Live entries: {}", self.len().await);
@@ -495,7 +629,7 @@ mod tests {
     async fn test_concurrent_access() {
         let tmp = NamedTempFile::new().unwrap();
         let engine = Arc::new(StorageEngine::new(tmp.path()).await.unwrap());
-        
+
         let mut handles = Vec::new();
         for i in 0..100 {
             let e = Arc::clone(&engine);
@@ -556,13 +690,13 @@ mod tests {
             .set("k1".into(), serde_json::json!({"tag": "blue"}))
             .set("k2".into(), serde_json::json!({"tag": "red"}))
             .delete("k1".into());
-        
+
         engine.commit_transaction(tx.build()).await.unwrap();
 
         // 3. Verify results
         assert!(engine.get("k1").await.is_none());
         assert!(engine.get("k2").await.is_some());
-        
+
         let red_items = engine.get_by_index("tag", &serde_json::json!("red")).await;
         assert_eq!(red_items.len(), 1);
         assert_eq!(red_items[0], "k2");
@@ -570,7 +704,7 @@ mod tests {
         // 4. Recovery Test for Transactions
         let path = tmp.path().to_path_buf();
         drop(engine);
-        
+
         let engine_recovered = StorageEngine::new(&path).await.unwrap();
         assert!(engine_recovered.get("k1").await.is_none());
         assert!(engine_recovered.get("k2").await.is_some());

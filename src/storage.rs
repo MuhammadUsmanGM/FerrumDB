@@ -24,11 +24,30 @@ pub enum FsyncPolicy {
     Never,
 }
 
+/// Wrapper for serde_json::Value that serializes as a JSON string in bincode.
+/// Bincode doesn't support `deserialize_any` which `serde_json::Value` requires,
+/// so we serialize the Value to a JSON string first, then let bincode handle the string.
+mod json_value_bincode {
+    use serde::{Serializer, Deserializer, Deserialize};
+    use serde_json::Value;
+
+    pub fn serialize<S: Serializer>(value: &Value, serializer: S) -> Result<S::Ok, S::Error> {
+        let json_str = serde_json::to_string(value).map_err(serde::ser::Error::custom)?;
+        serializer.serialize_str(&json_str)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Value, D::Error> {
+        let json_str = String::deserialize(deserializer)?;
+        serde_json::from_str(&json_str).map_err(serde::de::Error::custom)
+    }
+}
+
 /// Types of operations stored in the log.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum LogOp {
     Set {
         key: String,
+        #[serde(with = "json_value_bincode")]
         value: Value,
         expiry: Option<SystemTime>
     },
@@ -42,7 +61,7 @@ pub enum LogOp {
 struct IndexEntry {
     /// Byte offset in the log file where this record's data begins (after the length prefix).
     offset: u64,
-    /// Size of the serialized LogOp JSON data.
+    /// Size of the serialized LogOp bincode data.
     size: u64,
     expiry: Option<SystemTime>,
 }
@@ -158,7 +177,7 @@ impl StorageEngine {
                     }
 
                     let entry_data = &buffer[data_offset as usize..(data_offset as usize) + (size as usize)];
-                    match serde_json::from_slice::<LogOp>(entry_data) {
+                    match bincode::deserialize::<LogOp>(entry_data) {
                         Ok(op) => {
                             Self::apply_op_to_index(&mut index, &op, data_offset, size);
                         }
@@ -221,7 +240,7 @@ impl StorageEngine {
         let data = self.fs.read_at(&self.path, entry.offset, entry.size as usize)
             .await.map_err(FerrumError::Io)?;
 
-        let op: LogOp = serde_json::from_slice(&data)
+        let op: LogOp = bincode::deserialize(&data)
             .map_err(|e| FerrumError::Corruption(format!("Failed to read value for key '{}': {}", key, e)))?;
 
         match op {
@@ -285,7 +304,7 @@ impl StorageEngine {
         };
 
         // Serialize and write, capturing the offset
-        let encoded = serde_json::to_vec(&op).map_err(|e| FerrumError::Corruption(e.to_string()))?;
+        let encoded = bincode::serialize(&op).map_err(|e| FerrumError::Corruption(e.to_string()))?;
         let size = encoded.len() as u64;
         let data_offset = self.append_raw_to_log(&encoded).await?;
 
@@ -329,7 +348,7 @@ impl StorageEngine {
 
         if old_val.is_some() {
             let op = LogOp::Delete { key: key.to_string() };
-            let encoded = serde_json::to_vec(&op).map_err(|e| FerrumError::Corruption(e.to_string()))?;
+            let encoded = bincode::serialize(&op).map_err(|e| FerrumError::Corruption(e.to_string()))?;
             self.append_raw_to_log(&encoded).await?;
 
             {
@@ -418,7 +437,7 @@ impl StorageEngine {
         if ops.is_empty() { return Ok(()); }
 
         let tx_op = LogOp::Transaction { ops: ops.clone() };
-        let encoded = serde_json::to_vec(&tx_op).map_err(|e| FerrumError::Corruption(e.to_string()))?;
+        let encoded = bincode::serialize(&tx_op).map_err(|e| FerrumError::Corruption(e.to_string()))?;
         let size = encoded.len() as u64;
         let data_offset = self.append_raw_to_log(&encoded).await?;
 
@@ -542,7 +561,7 @@ impl StorageEngine {
                     value,
                     expiry: entry.expiry
                 };
-                let encoded = serde_json::to_vec(&op).map_err(|e| FerrumError::Corruption(e.to_string()))?;
+                let encoded = bincode::serialize(&op).map_err(|e| FerrumError::Corruption(e.to_string()))?;
                 let size = encoded.len() as u64;
                 let size_bytes = size.to_le_bytes();
 

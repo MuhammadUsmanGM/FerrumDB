@@ -1,0 +1,9 @@
+[package]
+name = "ferrumdb-task-manager"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ferrumdb = { path = "../.." }
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"

@@ -3,9 +3,10 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white" />
   <img src="https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white" />
+  <img src="https://img.shields.io/badge/Node.js-339933?style=for-the-badge&logo=nodedotjs&logoColor=white" />
   <img src="https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge" />
   <img src="https://img.shields.io/badge/AES--256-Encrypted-red?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/version-0.1.0-blue?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/version-0.1.1-blue?style=for-the-badge" />
 </p>
 
 <p align="center">
@@ -19,7 +20,7 @@
 
 FerrumDB is an embedded key-value database engine built in Rust, designed for applications that need fast local persistence without the overhead of a server process. It is inspired by Bitcask and implements a custom binary log format, in-memory indexing, AES-256-GCM encryption at rest, atomic transactions, and a live web dashboard — all in ~1,000 lines of safe, async Rust.
 
-It also ships Python bindings via PyO3, making it accessible from Python with a single `pip install`.
+It ships Python bindings via PyO3 (`pip install ferrumdb`) and Node.js bindings via NAPI-RS (`npm install ferrumdb`).
 
 ---
 
@@ -158,7 +159,7 @@ Or manually add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ferrumdb = "0.1.0"
+ferrumdb = "0.1.1"
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```
@@ -228,6 +229,20 @@ cargo run -- --fsync=always   # strongest durability
 | `INDEX <field>` | Create secondary index on JSON field |
 | `FIND <field> <value>` | Query by indexed field |
 | `HELP` | Show commands + live session metrics |
+
+---
+
+## 📂 Examples
+
+Full working examples for each language are in the [`examples/`](./examples) directory:
+
+| Example | Language | Description | Run |
+|---|---|---|---|
+| [**rust-example**](./examples/rust-example) | Rust | Task Manager — CRUD, secondary indexes, transactions, TTL | `cd examples/rust-example && cargo run` |
+| [**python-example**](./examples/python-example) | Python | Contact Book — CRUD, secondary indexes, transactions | `cd examples/python-example && python main.py` |
+| [**node-example**](./examples/node-example) | Node.js | Note Taker — CRUD, secondary indexes, transactions | `cd examples/node-example && node main.mjs` |
+
+Each example is self-contained and demonstrates the core FerrumDB API in its respective language.
 
 ---
 

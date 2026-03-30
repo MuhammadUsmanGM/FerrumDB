@@ -1,6 +1,6 @@
 [package]
 name = "ferrumdb"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "A premium, high-performance embedded key-value database with TTL and compaction."
 license = "MIT"

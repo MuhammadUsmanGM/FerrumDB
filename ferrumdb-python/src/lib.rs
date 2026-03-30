@@ -226,7 +226,7 @@ impl PyTransaction {
 fn ferrumdb(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFerrumDB>()?;
     m.add_class::<PyTransaction>()?;
-    m.add("__version__", "0.1.0")?;
+    m.add("__version__", "0.1.1")?;
     m.add("__author__", "FerrumDB Team")?;
     Ok(())
 }

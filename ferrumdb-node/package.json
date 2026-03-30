@@ -1,0 +1,29 @@
+{
+  "name": "ferrumdb",
+  "version": "0.1.0",
+  "description": "A premium, high-performance embedded key-value database with TTL, encryption, and secondary indexes.",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "scripts": {
+    "build": "napi build --release --platform",
+    "build:debug": "napi build --platform",
+    "test": "node --test __test__/test.mjs"
+  },
+  "napi": {
+    "name": "ferrumdb",
+    "triples": {}
+  },
+  "keywords": ["database", "kv", "storage", "embeddable", "json", "key-value"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MuhammadUsmanGM/FerrumDB"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts"
+  ]
+}

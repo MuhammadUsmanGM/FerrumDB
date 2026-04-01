@@ -1,6 +1,6 @@
 {
   "name": "ferrumdb",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A premium, high-performance embedded key-value database with TTL, encryption, and secondary indexes.",
   "main": "index.js",
   "types": "index.d.ts",
@@ -24,6 +24,7 @@
   },
   "files": [
     "index.js",
-    "index.d.ts"
+    "index.d.ts",
+    "README.md"
   ]
 }

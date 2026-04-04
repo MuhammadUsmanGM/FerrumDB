@@ -292,6 +292,12 @@ let db = FerrumDB::open_from_env().await?;
 
 ---
 
+## 📋 Changelog
+
+See [`CHANGELOG.md`](./CHANGELOG.md) for a full list of changes per version.
+
+---
+
 ## 📝 License
 
 MIT — see `LICENSE` for details.

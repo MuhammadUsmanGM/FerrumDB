@@ -11,14 +11,18 @@
 //! db.set("user:1", {"name": "alice", "role": "admin"})
 //! val = db.get("user:1")  # => {"name": "alice", "role": "admin"}
 //!
-//! db.create_index("role")
-//! admins = db.find("role", "admin")  # => ["user:1"]
+//! # With TTL (auto-expires after 60 seconds)
+//! db.set_ex("session:abc", {"token": "xyz"}, 60)
+//!
+//! # With encryption
+//! db2 = FerrumDB.open("secure.db", encryption_key="my_super_secret_key_32_bytes_!!?")
 //! ```
 
 use pyo3::prelude::*;
 use pyo3::exceptions::PyRuntimeError;
 use std::sync::Arc;
-use ::ferrumdb::StorageEngine;
+use std::time::Duration;
+use ::ferrumdb::{StorageEngine, DiskFileSystem, EncryptedFileSystem, io::AsyncFileSystem};
 use serde_json::Value;
 
 /// Convert a JSON Value to a Python object
@@ -65,16 +69,41 @@ pub struct PyFerrumDB {
 impl PyFerrumDB {
     /// Open a FerrumDB database at the given path.
     ///
+    /// Args:
+    ///     path: Path to the database file.
+    ///     encryption_key: Optional 32-character string for AES-256-GCM encryption.
+    ///
     /// ```python
     /// db = FerrumDB.open("myapp.db")
+    /// encrypted = FerrumDB.open("secure.db", encryption_key="my_super_secret_key_32_bytes_!!?")
     /// ```
     #[staticmethod]
-    pub fn open(path: &str) -> PyResult<Self> {
+    #[pyo3(signature = (path, encryption_key=None))]
+    pub fn open(path: &str, encryption_key: Option<&str>) -> PyResult<Self> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
-        let engine = rt.block_on(StorageEngine::new(path))
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let enc_key = encryption_key
+            .map(|s| {
+                let bytes = s.as_bytes();
+                if bytes.len() != 32 {
+                    return Err(PyRuntimeError::new_err(
+                        "encryption_key must be exactly 32 bytes (characters)",
+                    ));
+                }
+                let mut key = [0u8; 32];
+                key.copy_from_slice(bytes);
+                Ok(key)
+            })
+            .transpose()?;
+
+        let engine = rt.block_on(async {
+            let mut fs: Box<dyn AsyncFileSystem> = Box::new(DiskFileSystem);
+            if let Some(key) = enc_key {
+                fs = Box::new(EncryptedFileSystem::new(fs, key));
+            }
+            StorageEngine::with_fs(path, fs).await
+        }).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
         Ok(PyFerrumDB {
             engine: Arc::new(engine),
@@ -92,6 +121,19 @@ impl PyFerrumDB {
     pub fn set(&self, key: String, value: Bound<'_, PyAny>) -> PyResult<()> {
         let json_val = py_to_value(&value)?;
         self.rt.block_on(self.engine.set(key, json_val))
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Set a key with a TTL (time-to-live) in seconds. Auto-expires after the duration.
+    ///
+    /// ```python
+    /// db.set_ex("session:abc", {"token": "xyz"}, 60)  # expires in 60 seconds
+    /// ```
+    pub fn set_ex(&self, key: String, value: Bound<'_, PyAny>, ttl_seconds: f64) -> PyResult<()> {
+        let json_val = py_to_value(&value)?;
+        let ttl = Duration::from_secs_f64(ttl_seconds);
+        self.rt.block_on(self.engine.set_ex(key, json_val, Some(ttl)))
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         Ok(())
     }
@@ -173,28 +215,40 @@ impl PyFerrumDB {
     /// db.commit(tx)
     /// ```
     pub fn commit(&self, tx: &mut PyTransaction) -> PyResult<()> {
-        let ops: Vec<::ferrumdb::storage::LogOp> = tx.ops.iter().map(|(key, val_opt)| {
-            if let Some(ref v) = val_opt {
-                ::ferrumdb::storage::LogOp::Set {
-                    key: key.clone(),
-                    value: v.clone(),
-                    expiry: None
+        let ops: Vec<::ferrumdb::storage::LogOp> = tx.ops.iter().map(|op| {
+            match op {
+                PyTxOp::Set { key, value, ttl_seconds } => {
+                    let expiry = ttl_seconds.map(|s| {
+                        std::time::SystemTime::now() + Duration::from_secs_f64(s)
+                    });
+                    ::ferrumdb::storage::LogOp::Set {
+                        key: key.clone(),
+                        value: value.clone(),
+                        expiry,
+                    }
                 }
-            } else {
-                ::ferrumdb::storage::LogOp::Delete { key: key.clone() }
+                PyTxOp::Delete { key } => {
+                    ::ferrumdb::storage::LogOp::Delete { key: key.clone() }
+                }
             }
         }).collect();
-        
+
         self.rt.block_on(self.engine.commit_transaction(ops))
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         Ok(())
     }
 }
 
+/// Internal transaction operation.
+enum PyTxOp {
+    Set { key: String, value: Value, ttl_seconds: Option<f64> },
+    Delete { key: String },
+}
+
 /// A transaction builder. Use with `db.commit()`.
 #[pyclass(name = "Transaction")]
 pub struct PyTransaction {
-    ops: Vec<(String, Option<Value>)>, // (key, Some(value)) = set, (key, None) = delete
+    ops: Vec<PyTxOp>,
 }
 
 #[pymethods]
@@ -207,13 +261,24 @@ impl PyTransaction {
     /// Stage a SET operation.
     pub fn set(&mut self, key: String, value: Bound<'_, PyAny>) -> PyResult<()> {
         let json_val = py_to_value(&value)?;
-        self.ops.push((key, Some(json_val)));
+        self.ops.push(PyTxOp::Set { key, value: json_val, ttl_seconds: None });
+        Ok(())
+    }
+
+    /// Stage a SET operation with TTL in seconds.
+    ///
+    /// ```python
+    /// tx.set_ex("session:abc", {"token": "xyz"}, 60)
+    /// ```
+    pub fn set_ex(&mut self, key: String, value: Bound<'_, PyAny>, ttl_seconds: f64) -> PyResult<()> {
+        let json_val = py_to_value(&value)?;
+        self.ops.push(PyTxOp::Set { key, value: json_val, ttl_seconds: Some(ttl_seconds) });
         Ok(())
     }
 
     /// Stage a DELETE operation.
     pub fn delete(&mut self, key: String) {
-        self.ops.push((key, None));
+        self.ops.push(PyTxOp::Delete { key });
     }
 
     pub fn __repr__(&self) -> String {

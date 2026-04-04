@@ -165,6 +165,21 @@ impl FerrumDB {
         self.rt.block_on(self.engine.len()) as u32
     }
 
+    /// Launch Ferrum Studio web dashboard on the given port.
+    /// Runs in the background — your app continues normally.
+    ///
+    /// ```js
+    /// db.startStudio(7474); // opens http://localhost:7474
+    /// ```
+    #[napi(js_name = "startStudio")]
+    pub fn start_studio(&self, port: Option<u32>) -> Result<()> {
+        let p = port.unwrap_or(7474) as u16;
+        let engine = Arc::clone(&self.engine);
+        self.rt.block_on(::ferrumdb::studio::serve(engine, p));
+        println!("\x1b[38;5;208m🔥 Ferrum Studio → http://localhost:{}\x1b[0m", p);
+        Ok(())
+    }
+
     /// Create a secondary index on a specific JSON field.
     ///
     /// ```js

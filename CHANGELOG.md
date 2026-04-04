@@ -4,6 +4,16 @@ All notable changes to FerrumDB will be documented in this file.
 
 ---
 
+## [0.1.3] — 2026-04-04
+
+### Added
+- **TTL support in bindings** — `setEx()` / `set_ex()` for both Node.js and Python (+ transactions)
+- **Encryption in bindings** — `FerrumDB.open(path, { encryptionKey })` (Node.js) / `FerrumDB.open(path, encryption_key=)` (Python)
+- **`startStudio()` / `start_studio()`** — Launch Ferrum Studio web dashboard directly from Node.js or Python, no Cargo needed
+- Updated TypeScript declarations (`index.d.ts`) with all new methods
+
+---
+
 ## [0.1.2] — 2026-04-04
 
 ### Added

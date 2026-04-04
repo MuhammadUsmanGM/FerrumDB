@@ -11,19 +11,21 @@ High-performance, embedded JSON database for Node.js. Powered by Rust and NAPI-R
 
 ---
 
-## 🚀 Why FerrumDB?
+## Why FerrumDB?
 
 FerrumDB is an embedded key-value database engine written from scratch in Rust. It's designed for applications that need fast local persistence without the overhead of a server process.
 
-- ⚡ **Native Performance**: Built in Rust for O(1) reads and writes.
-- 📄 **Native JSON Support**: Store and query structured documents.
-- 🔍 **Secondary Indexing**: Query by JSON fields with dedicated indexes.
-- ⚛️ **Atomic Transactions**: Batch operations that succeed or fail together.
-- 🔐 **Encrypted & Durable**: AES-256-GCM encryption at rest.
+- **Native Performance**: Built in Rust for O(1) reads and writes.
+- **Native JSON Support**: Store and query structured documents.
+- **Secondary Indexing**: Query by JSON fields with dedicated indexes.
+- **Atomic Transactions**: Batch operations that succeed or fail together.
+- **TTL Support**: Keys auto-expire after a configurable duration.
+- **AES-256 Encryption**: Optional encryption at rest.
+- **Built-in Dashboard**: Launch Ferrum Studio from your app — no extra tools needed.
 
 ---
 
-## 📦 Installation
+## Installation
 
 ```bash
 npm install ferrumdb
@@ -31,62 +33,95 @@ npm install ferrumdb
 
 ---
 
-## 💡 Quick Start
+## Quick Start
 
 ```javascript
-const { FerrumDb, Transaction } = require('ferrumdb');
+const { FerrumDB, Transaction } = require('ferrumdb');
 
 // 1. Open (or create) a database
-const db = FerrumDb.open("myapp.db");
+const db = FerrumDB.open("myapp.db");
 
 // 2. Simple CRUD
 db.set("user:1", { name: "Alice", role: "admin", points: 100 });
-console.log(db.get("user:1")); 
+console.log(db.get("user:1"));
 
-// 3. Secondary Indexing
+// 3. TTL — auto-expires after 60 seconds
+db.setEx("session:abc", { token: "xyz" }, 60);
+
+// 4. Secondary Indexing
 db.createIndex("role");
-const admins = db.find("role", '"admin"'); 
+const admins = db.find("role", '"admin"');
 console.log("Admins:", admins);
 
-// 4. Atomic Transactions
+// 5. Atomic Transactions
 const tx = new Transaction();
 tx.set("user:2", { name: "Bob", role: "user" });
+tx.setEx("cache:temp", { data: 123 }, 300); // TTL in transactions too
 db.commit(tx);
 
-// 5. Utility
+// 6. Utility
 console.log("Total entries:", db.count());
 console.log("All keys:", db.keys());
 ```
 
 ---
 
-## 🛠️ API Reference
+## Encryption
 
-### FerrumDb
+Open a database with AES-256-GCM encryption at rest:
 
-| Method | Description |
-|---|---|
-| `static open(path: string): FerrumDb` | Opens or creates a database. |
-| `get(key: string): any` | Retrieves a value by key. |
-| `set(key: string, value: any): void` | Stores a value. |
-| `delete(key: string): boolean` | Deletes a key. |
-| `keys(): string[]` | Returns all keys. |
-| `count(): number` | Total entries. |
+```javascript
+const db = FerrumDB.open("secure.db", {
+  encryptionKey: "my_super_secret_key_32_bytes_!!?"  // exactly 32 characters
+});
 
----
-
-## 🖥️ Ferrum Studio (Web Dashboard)
-
-Browse your database visually using the standalone CLI:
-
-```bash
-cargo install ferrumdb-cli
-ferrumdb web myapp.db
-# 🔥 http://localhost:7474
+db.set("secret", { classified: true });
 ```
 
 ---
 
-## 📝 License
+## Ferrum Studio (Web Dashboard)
+
+Launch the built-in web dashboard directly from your app:
+
+```javascript
+const db = FerrumDB.open("myapp.db");
+db.startStudio(7474); // http://localhost:7474
+```
+
+Browse keys, inspect values, set/delete entries, and view real-time metrics — no extra tools needed.
+
+---
+
+## API Reference
+
+### FerrumDB
+
+| Method | Description |
+|---|---|
+| `FerrumDB.open(path, options?)` | Opens or creates a database. Options: `{ encryptionKey: string }` |
+| `get(key)` | Retrieves a value by key. Returns `null` if not found. |
+| `set(key, value)` | Stores a JSON-serializable value. |
+| `setEx(key, value, ttlSeconds)` | Stores a value with TTL (auto-expires). |
+| `delete(key)` | Deletes a key. Returns `true` if existed. |
+| `keys()` | Returns all keys. |
+| `count()` | Total entries. |
+| `createIndex(field)` | Creates a secondary index on a JSON field. |
+| `find(field, value)` | Queries keys by indexed field value. |
+| `commit(tx)` | Commits an atomic transaction. |
+| `startStudio(port?)` | Launches Ferrum Studio dashboard. Default port: `7474`. |
+
+### Transaction
+
+| Method | Description |
+|---|---|
+| `new Transaction()` | Creates a new transaction. |
+| `set(key, value)` | Stages a SET operation. |
+| `setEx(key, value, ttlSeconds)` | Stages a SET with TTL. |
+| `delete(key)` | Stages a DELETE operation. |
+
+---
+
+## License
 
 MIT — [Muhammad Usman](https://github.com/MuhammadUsmanGM)

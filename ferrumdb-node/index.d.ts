@@ -6,82 +6,27 @@
 export type FerrumDB = FerrumDb
 /** The main FerrumDB class for Node.js. */
 export declare class FerrumDb {
-  /**
-   * Open a FerrumDB database at the given path.
-   *
-   * ```js
-   * const db = await FerrumDB.open("myapp.db");
-   * ```
-   */
-  static open(path: string): FerrumDb
-  /**
-   * Get a value by key. Returns the value or null if not found.
-   *
-   * ```js
-   * const val = await db.get("user:1");
-   * ```
-   */
+  /** Open a FerrumDB database at the given path. Options: { encryptionKey: string } */
+  static open(path: string, options?: { encryptionKey?: string }): FerrumDb
+  /** Get a value by key. Returns the value or null if not found. */
   get(key: string): unknown
-  /**
-   * Set a key to a JSON-serializable value.
-   *
-   * ```js
-   * await db.set("user:1", { name: "alice", role: "admin" });
-   * await db.set("counter", 42);
-   * ```
-   */
+  /** Set a key to a JSON-serializable value. */
   set(key: string, value: unknown): void
-  /**
-   * Delete a key. Returns true if it existed, false if not found.
-   *
-   * ```js
-   * const deleted = await db.delete("user:1");
-   * ```
-   */
+  /** Set a key with a TTL (time-to-live) in seconds. Auto-expires after the duration. */
+  setEx(key: string, value: unknown, ttlSeconds: number): void
+  /** Delete a key. Returns true if it existed, false if not found. */
   delete(key: string): boolean
-  /**
-   * List all existing keys in the database.
-   *
-   * ```js
-   * const keys = await db.keys();
-   * ```
-   */
+  /** List all existing keys in the database. */
   keys(): Array<string>
-  /**
-   * Return the total number of entries.
-   *
-   * ```js
-   * const count = await db.count();
-   * ```
-   */
+  /** Return the total number of entries. */
   count(): number
-  /**
-   * Create a secondary index on a specific JSON field.
-   *
-   * ```js
-   * await db.createIndex("role");
-   * ```
-   */
+  /** Launch Ferrum Studio web dashboard. Runs in the background. */
+  startStudio(port?: number): void
+  /** Create a secondary index on a specific JSON field. */
   createIndex(field: string): void
-  /**
-   * Find all keys where the given field matches the given value.
-   *
-   * ```js
-   * await db.createIndex("role");
-   * const admins = await db.find("role", "admin");
-   * ```
-   */
+  /** Find all keys where the given field matches the given value. */
   find(field: string, value: string): Array<string>
-  /**
-   * Commit a transaction atomically.
-   *
-   * ```js
-   * const tx = new Transaction();
-   * tx.set("key1", { value: 1 });
-   * tx.set("key2", { value: 2 });
-   * await db.commit(tx);
-   * ```
-   */
+  /** Commit a transaction atomically. */
   commit(tx: Transaction): void
 }
 /** A transaction builder. Use with `db.commit(tx)`. */
@@ -90,6 +35,8 @@ export declare class Transaction {
   constructor()
   /** Stage a SET operation. */
   set(key: string, value: unknown): void
+  /** Stage a SET operation with TTL in seconds. */
+  setEx(key: string, value: unknown, ttlSeconds: number): void
   /** Stage a DELETE operation. */
   delete(key: string): void
 }

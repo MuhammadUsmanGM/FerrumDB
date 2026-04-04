@@ -102,6 +102,16 @@ FerrumDB makes specific trade-offs for simplicity and performance:
 
 See [GitHub](https://github.com/MuhammadUsmanGM/FerrumDB) for full documentation.
 
+## Ferrum Studio (Web Dashboard)
+
+Browse your database visually using the standalone CLI:
+
+```bash
+cargo install ferrumdb-cli
+ferrumdb web myapp.db
+# http://localhost:7474
+```
+
 ## License
 
 MIT — See LICENSE for details.

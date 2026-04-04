@@ -109,7 +109,7 @@ async fn dashboard_page() -> Html<&'static str> {
     Html(DASHBOARD_HTML)
 }
 
-const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
+pub const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">

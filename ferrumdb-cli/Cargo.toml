@@ -1,0 +1,21 @@
+[package]
+name = "ferrumdb-cli"
+version = "0.1.2"
+edition = "2021"
+description = "CLI tool for FerrumDB — launch Ferrum Studio web dashboard for any .db file."
+license = "MIT"
+repository = "https://github.com/MuhammadUsmanGM/FerrumDB"
+readme = "README.md"
+keywords = ["database", "kv", "cli", "dashboard", "ferrumdb"]
+categories = ["command-line-utilities", "database-implementations"]
+
+[[bin]]
+name = "ferrumdb"
+path = "src/main.rs"
+
+[dependencies]
+ferrumdb = { path = ".." }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+axum = "0.8.8"
+serde_json = "1"

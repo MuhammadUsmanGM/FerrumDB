@@ -6,7 +6,7 @@
   <img src="https://img.shields.io/badge/Node.js-339933?style=for-the-badge&logo=nodedotjs&logoColor=white" />
   <img src="https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge" />
   <img src="https://img.shields.io/badge/AES--256-Encrypted-red?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/version-0.1.1-blue?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/version-0.1.2-blue?style=for-the-badge" />
 </p>
 
 <p align="center">
@@ -203,12 +203,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## 🖥️ Ferrum Studio
 
-When you run the REPL, Ferrum Studio auto-launches — an embedded web dashboard to browse, query, and inspect your live database, including real-time operation metrics.
+Ferrum Studio is a built-in web dashboard to browse, query, and inspect your database with real-time metrics.
 
+**Option 1 — Via the REPL** (auto-launches when you `cargo run`):
 ```bash
 cargo run --release
 # 🔥 Ferrum Studio → http://localhost:7474
 ```
+
+**Option 2 — Standalone CLI** (works with any .db file, any language):
+```bash
+cargo install ferrumdb-cli
+ferrumdb web myapp.db              # opens http://localhost:7474
+ferrumdb web myapp.db --port 8080  # custom port
+ferrumdb info myapp.db             # show key count & file size
+ferrumdb compact myapp.db          # remove deleted/expired entries
+```
+
+The CLI works regardless of whether you use the Rust, Python, or Node.js bindings — just point it at your `.db` file.
 
 ---
 

@@ -75,6 +75,18 @@ console.log("All keys:", db.keys());
 
 ---
 
+## 🖥️ Ferrum Studio (Web Dashboard)
+
+Browse your database visually using the standalone CLI:
+
+```bash
+cargo install ferrumdb-cli
+ferrumdb web myapp.db
+# 🔥 http://localhost:7474
+```
+
+---
+
 ## 📝 License
 
 MIT — [Muhammad Usman](https://github.com/MuhammadUsmanGM)

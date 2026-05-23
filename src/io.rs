@@ -75,10 +75,16 @@ impl AsyncFileSystem for DiskFileSystem {
     }
 
     async fn rename(&self, from: &Path, to: &Path) -> IoResult<()> {
-        // On Windows, rename fails if the target already exists (unlike POSIX).
-        // Remove the target first to make this safe across platforms.
-        if to.exists() {
-            fs::remove_file(to).await?;
+        // POSIX rename(2) is atomic and overwrites the target — use it directly.
+        // Windows rename fails if the target exists; only there do we need the
+        // unlink-then-rename workaround. Doing this unconditionally on POSIX
+        // would create a window where neither the old nor new file exists,
+        // breaking compaction's crash-safety guarantee. // MUGM-a3f7
+        #[cfg(windows)]
+        {
+            if to.exists() {
+                fs::remove_file(to).await?;
+            }
         }
         fs::rename(from, to).await
     }

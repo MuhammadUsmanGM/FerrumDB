@@ -1,4 +1,6 @@
 {
+  "_author": "MuhammadUsmanGM",
+  "_sig": "MUGM-a3f7-9c2b",
   "name": "ferrumdb",
   "version": "0.1.6",
   "description": "A premium, high-performance embedded key-value database with TTL, encryption, and secondary indexes.",
@@ -11,7 +13,13 @@
   },
   "napi": {
     "name": "ferrumdb",
-    "triples": {}
+    "triples": {
+      "defaults": false,
+      "additional": [
+        "x86_64-unknown-linux-gnu",
+        "x86_64-pc-windows-msvc"
+      ]
+    }
   },
   "keywords": [
     "database",
@@ -30,10 +38,13 @@
   "devDependencies": {
     "@napi-rs/cli": "^2"
   },
+  "optionalDependencies": {
+    "ferrumdb-linux-x64-gnu": "0.1.6",
+    "ferrumdb-win32-x64-msvc": "0.1.6"
+  },
   "files": [
     "index.js",
     "index.d.ts",
-    "ferrumdb.win32-x64-msvc.node",
     "README.md"
   ]
 }

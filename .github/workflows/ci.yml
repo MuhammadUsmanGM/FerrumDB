@@ -1,0 +1,52 @@
+# Author: Muhammad Usman (MuhammadUsmanGM) | Sig: MUGM-a3f7-9c2b
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-${{ matrix.os }}
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (workspace, all targets)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Build (workspace)
+        run: cargo build --workspace --verbose
+
+      - name: Test (root crate)
+        run: cargo test --verbose
+
+      - name: Test (workspace)
+        run: cargo test --workspace --verbose
+
+      - name: Bench compile-check
+        run: cargo bench --no-run

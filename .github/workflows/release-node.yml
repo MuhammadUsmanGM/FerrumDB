@@ -1,0 +1,167 @@
+# Author: Muhammad Usman (MuhammadUsmanGM) | Sig: MUGM-a3f7-9c2b
+name: Release Node (npm)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: ferrumdb-node
+
+jobs:
+  build:
+    name: Build ${{ matrix.settings.target }}
+    runs-on: ${{ matrix.settings.host }}
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - host: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            triple: linux-x64-gnu
+          - host: windows-latest
+            target: x86_64-pc-windows-msvc
+            triple: win32-x64-msvc
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.settings.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: node-${{ matrix.settings.target }}
+          workspaces: "ferrumdb-node"
+
+      - name: Install npm dependencies
+        run: npm ci || npm install
+
+      - name: Build native module
+        run: npx napi build --platform --release --target ${{ matrix.settings.target }}
+
+      - name: Upload prebuild artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.settings.triple }}
+          path: ferrumdb-node/ferrumdb.${{ matrix.settings.triple }}.node
+          if-no-files-found: error
+
+  publish:
+    name: Publish to npm
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Download all prebuilds
+        uses: actions/download-artifact@v4
+        with:
+          path: ferrumdb-node/artifacts
+          merge-multiple: true
+
+      - name: Stage platform packages and publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${TAG_NAME#v}"
+          cd ferrumdb-node
+          ls -la artifacts || true
+
+          publish_platform_pkg() {
+            local triple="$1"
+            local node_os="$2"
+            local node_cpu="$3"
+            local libc="$4"
+            local pkg_name="ferrumdb-${triple}"
+            local stage="staging/${pkg_name}"
+            local binary="artifacts/ferrumdb.${triple}.node"
+
+            if [[ ! -f "$binary" ]]; then
+              echo "::warning::Missing prebuild $binary — skipping $pkg_name"
+              return 0
+            fi
+
+            mkdir -p "$stage"
+            cp "$binary" "$stage/ferrumdb.${triple}.node"
+
+            local os_field cpu_field libc_field
+            os_field=$(printf '"%s"' "$node_os")
+            cpu_field=$(printf '"%s"' "$node_cpu")
+            if [[ -n "$libc" ]]; then
+              libc_field=",\n  \"libc\": [\"${libc}\"]"
+            else
+              libc_field=""
+            fi
+
+            cat > "$stage/package.json" <<EOF
+{
+  "name": "${pkg_name}",
+  "version": "${VERSION}",
+  "description": "FerrumDB native prebuild for ${triple}",
+  "main": "ferrumdb.${triple}.node",
+  "files": ["ferrumdb.${triple}.node"],
+  "os": [${os_field}],
+  "cpu": [${cpu_field}]$(printf "${libc_field}"),
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MuhammadUsmanGM/FerrumDB",
+    "directory": "ferrumdb-node"
+  }
+}
+EOF
+
+            (cd "$stage" && npm publish --access public --provenance=false)
+          }
+
+          publish_platform_pkg "linux-x64-gnu"  "linux" "x64" "glibc"
+          publish_platform_pkg "win32-x64-msvc" "win32" "x64" ""
+
+      - name: Sync main package version & publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${TAG_NAME#v}"
+          cd ferrumdb-node
+          # Update version + ensure optionalDependencies point at this VERSION
+          node -e "
+            const fs = require('fs');
+            const p = JSON.parse(fs.readFileSync('package.json','utf8'));
+            p.version = process.env.VERSION;
+            p.optionalDependencies = p.optionalDependencies || {};
+            p.optionalDependencies['ferrumdb-linux-x64-gnu']  = process.env.VERSION;
+            p.optionalDependencies['ferrumdb-win32-x64-msvc'] = process.env.VERSION;
+            // Main package must not ship binaries — those live in platform subpackages
+            p.files = ['index.js','index.d.ts','README.md'];
+            fs.writeFileSync('package.json', JSON.stringify(p, null, 2));
+          "
+          VERSION="$VERSION" node -e "console.log(require('./package.json'))"
+          npm publish --access public

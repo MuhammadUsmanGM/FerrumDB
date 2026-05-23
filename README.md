@@ -112,6 +112,21 @@ Benchmarked with [Criterion](https://github.com/bheisler/criterion.rs) on an app
 
 ---
 
+## 💻 Supported Platforms
+
+Pre-built artifacts are published for each tagged release. If your platform isn't listed, you can still build from source on any target Rust supports.
+
+| Platform | Rust crate | `ferrumdb-cli` binary | PyPI wheel | npm prebuild |
+|---|---|---|---|---|
+| **Linux x86_64 (glibc)** | ✅ source | ✅ `tar.gz` on GitHub Releases | ✅ `manylinux2014_x86_64` (Py 3.8–3.12) | ✅ `ferrumdb-linux-x64-gnu` |
+| **Windows x86_64 (MSVC)** | ✅ source | ✅ `zip` on GitHub Releases | ✅ (Py 3.8–3.12) | ✅ `ferrumdb-win32-x64-msvc` |
+| macOS (x64 / arm64) | ✅ source | ⏳ build from source | ⏳ build from source | ⏳ build from source |
+| Linux aarch64 / musl | ✅ source | ⏳ planned | ⏳ planned | ⏳ planned |
+
+> ⏳ = source builds work; prebuilt artifacts not yet shipped in CI. Open an issue if you need a specific target prioritized.
+
+---
+
 ## 🐍 Python Installation & Usage
 
 FerrumDB is available on PyPI. Install it using pip:
@@ -220,6 +235,15 @@ ferrumdb info myapp.db             # show key count & file size
 ferrumdb compact myapp.db          # remove deleted/expired entries
 ```
 
+**Option 3 — Pre-built Linux binary** (no Rust toolchain required):
+```bash
+# Replace VERSION with the latest tag, e.g. 0.1.4
+curl -L https://github.com/MuhammadUsmanGM/FerrumDB/releases/download/v<VERSION>/ferrumdb-cli-<VERSION>-x86_64-unknown-linux-gnu.tar.gz \
+  | tar -xz
+sudo mv ferrumdb-cli-*/ferrumdb /usr/local/bin/
+ferrumdb info myapp.db
+```
+
 The CLI works regardless of whether you use the Rust, Python, or Node.js bindings — just point it at your `.db` file.
 
 ---
@@ -303,3 +327,6 @@ See [`CHANGELOG.md`](./CHANGELOG.md) for a full list of changes per version.
 MIT — see `LICENSE` for details.
 
 <p align="center">Built with 🦀 by <a href="https://github.com/MuhammadUsmanGM">Muhammad Usman</a></p>
+
+<!-- Muhammad Usman | MuhammadUsmanGM | MUGM-a3f7-9c2b -->
+

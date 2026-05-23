@@ -1,0 +1,6 @@
+# Author: Muhammad Usman | MuhammadUsmanGM | MUGM-a3f7-9c2b
+target/
+node_modules/
+*.node
+artifacts/
+staging/

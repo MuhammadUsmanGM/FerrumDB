@@ -1,6 +1,30 @@
 # Changelog
 
+<!-- Muhammad Usman | MuhammadUsmanGM | MUGM-a3f7-9c2b -->
+
 All notable changes to FerrumDB will be documented in this file.
+
+---
+
+## [0.1.4] — 2026-05-23
+
+### Added
+- **Linux x86_64 distribution** — pre-built artifacts published on every `v*` tag:
+  - **Rust CLI**: `ferrumdb-cli-<version>-x86_64-unknown-linux-gnu.tar.gz` attached to GitHub Releases
+  - **Python wheel**: `manylinux2014_x86_64` wheels for CPython 3.8 – 3.12 published to PyPI
+  - **Node.js prebuild**: `ferrumdb-linux-x64-gnu` platform sub-package published to npm; resolved automatically via `optionalDependencies`
+- `.github/workflows/ci.yml` — cross-platform CI (Ubuntu + Windows) running fmt, clippy, tests, and bench compile-check on every push and PR
+- `.github/workflows/release-cli.yml`, `release-python.yml`, `release-node.yml` — tag-triggered release pipelines
+
+### Fixed
+- **`src/io.rs` rename atomicity** — POSIX `rename(2)` is now used directly on Unix instead of the unconditional unlink-then-rename. The Windows-compat workaround is gated behind `#[cfg(windows)]`. Restores compaction's crash-safety guarantee on Linux/macOS — a crash between unlink and rename previously could have left the DB with no file at all.
+
+### Changed
+- **`ferrumdb-node/package.json`** — the main `ferrumdb` package no longer ships a Windows-specific `.node` binary in `files[]`. Platform-specific prebuilds now live in their own npm packages (`ferrumdb-linux-x64-gnu`, `ferrumdb-win32-x64-msvc`) declared as `optionalDependencies`. The existing `index.js` loader already supports this resolution pattern.
+
+### Distribution notes
+- Publishing requires `PYPI_API_TOKEN` and `NPM_TOKEN` repository secrets configured under environments `pypi` and `npm` respectively.
+- Tag a release: `git tag v0.1.4 && git push --tags` — CI builds and publishes every target.
 
 ---
 

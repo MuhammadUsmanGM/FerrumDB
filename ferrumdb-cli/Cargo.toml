@@ -1,6 +1,6 @@
 [package]
 name = "ferrumdb-cli"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 description = "CLI tool for FerrumDB — launch Ferrum Studio web dashboard for any .db file."
 license = "MIT"

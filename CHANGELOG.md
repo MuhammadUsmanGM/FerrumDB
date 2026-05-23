@@ -6,7 +6,7 @@ All notable changes to FerrumDB will be documented in this file.
 
 ---
 
-## [0.1.4] — 2026-05-23
+## [0.2.0] — 2026-05-23
 
 ### Added
 - **Linux x86_64 distribution** — pre-built artifacts published on every `v*` tag:

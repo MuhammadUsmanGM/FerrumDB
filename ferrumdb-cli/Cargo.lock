@@ -377,7 +377,7 @@ dependencies = [
 
 [[package]]
 name = "ferrumdb"
-version = "0.1.2"
+version = "0.1.4"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -396,7 +396,7 @@ dependencies = [
 
 [[package]]
 name = "ferrumdb-cli"
-version = "0.1.2"
+version = "0.1.4"
 dependencies = [
  "axum",
  "clap",

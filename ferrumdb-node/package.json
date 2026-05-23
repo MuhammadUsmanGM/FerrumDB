@@ -2,7 +2,7 @@
   "_author": "MuhammadUsmanGM",
   "_sig": "MUGM-a3f7-9c2b",
   "name": "ferrumdb",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "description": "A premium, high-performance embedded key-value database with TTL, encryption, and secondary indexes.",
   "main": "index.js",
   "types": "index.d.ts",
